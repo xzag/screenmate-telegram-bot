@@ -1,0 +1,19 @@
+telegram:
+  token: "put-telegram-token-here"
+  allowed_users:
+    - 123456789
+
+screenmate:
+  base_url: "https://screenmate.example.local"
+  max_parallel_rooms: 3
+
+rooms:
+  - key: "office"
+    name: "Офис разработки"
+    username: "screenmate-user"
+    password: "screenmate-password"
+    room_id: "12345"
+    conditioners:
+      2: "у окна"
+      3: "над столами"
+      4: "у входа"

@@ -1,0 +1,19 @@
+# sqlite
+*.db
+*.db-shm
+*.db-wal
+
+# env
+.env
+.env.local
+config.yaml
+
+# IDE
+.idea/
+.vscode/x
+
+# vendor
+vendor/
+
+# binaries
+screenmate-bot
