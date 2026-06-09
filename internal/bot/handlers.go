@@ -1,5 +1,3 @@
-// internal/bot/handlers.go
-
 package bot
 
 import (
@@ -35,7 +33,7 @@ func (b *Bot) sendAllRoomsStatus(chatID int64) {
 
 	rooms := b.service.AllRoomsStatus(ctx)
 
-	msg := tgbotapi.NewMessage(chatID, formatAllRooms(rooms))
+	msg := tgbotapi.NewMessage(chatID, b.formatAllRooms(rooms))
 	msg.ParseMode = tgbotapi.ModeHTML
 
 	if _, err := b.api.Send(msg); err != nil {
@@ -175,7 +173,7 @@ func (b *Bot) editRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
 	edit := tgbotapi.NewEditMessageTextAndMarkup(
 		cb.Message.Chat.ID,
 		cb.Message.MessageID,
-		formatRoom(room),
+		b.formatRoom(room),
 		roomKeyboard(room),
 	)
 	edit.ParseMode = tgbotapi.ModeHTML

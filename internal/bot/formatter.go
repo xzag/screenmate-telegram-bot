@@ -3,27 +3,26 @@ package bot
 import (
 	"fmt"
 	"strings"
-	"time"
 
 	"screenmate-bot/internal/service"
 )
 
-func formatAllRooms(rooms []service.RoomView) string {
-	var b strings.Builder
+func (b *Bot) formatAllRooms(rooms []service.RoomView) string {
+	var sb strings.Builder
 
-	b.WriteString("❄️ <b>Кондиционирование</b>\n\n")
+	sb.WriteString("❄️ <b>Кондиционирование</b>\n\n")
 
 	if len(rooms) == 0 {
-		b.WriteString("Комнаты не настроены.\n")
-		b.WriteString(fmt.Sprintf("\nОбновлено: <code>%s</code>", time.Now().Format("15:04:05")))
-		return b.String()
+		sb.WriteString("Комнаты не настроены.\n")
+		sb.WriteString(fmt.Sprintf("\nОбновлено: <code>%s</code>", b.clock.FormatTime(b.clock.Now())))
+		return sb.String()
 	}
 
 	for _, room := range rooms {
-		b.WriteString(fmt.Sprintf("🏢 <b>%s</b>\n\n", escapeHTML(room.Name)))
+		sb.WriteString(fmt.Sprintf("🏢 <b>%s</b>\n\n", escapeHTML(room.Name)))
 
 		if room.Err != nil {
-			b.WriteString(fmt.Sprintf(
+			sb.WriteString(fmt.Sprintf(
 				"⚠️ ошибка: <code>%s</code>\n\n",
 				escapeHTML(room.Err.Error()),
 			))
@@ -31,7 +30,7 @@ func formatAllRooms(rooms []service.RoomView) string {
 		}
 
 		if len(room.Conditioners) == 0 {
-			b.WriteString("Кондиционеры не настроены.\n\n")
+			sb.WriteString("Кондиционеры не настроены.\n\n")
 			continue
 		}
 
@@ -49,19 +48,19 @@ func formatAllRooms(rooms []service.RoomView) string {
 				label += " — " + ac.Comment
 			}
 
-			b.WriteString(fmt.Sprintf(
+			sb.WriteString(fmt.Sprintf(
 				"%s %s\n",
 				icon,
 				escapeHTML(label),
 			))
 		}
 
-		b.WriteString("\n")
+		sb.WriteString("\n")
 	}
 
-	b.WriteString(fmt.Sprintf("Обновлено: <code>%s</code>", time.Now().Format("15:04:05")))
+	sb.WriteString(fmt.Sprintf("Обновлено: <code>%s</code>", b.clock.FormatTime(b.clock.Now())))
 
-	return b.String()
+	return sb.String()
 }
 
 func formatRoomsMenu(rooms []service.RoomShort) string {
@@ -79,19 +78,19 @@ func formatRoomsMenu(rooms []service.RoomShort) string {
 	return b.String()
 }
 
-func formatRoom(room service.RoomView) string {
-	var b strings.Builder
+func (b *Bot) formatRoom(room service.RoomView) string {
+	var sb strings.Builder
 
-	b.WriteString("❄️ <b>Кондиционирование</b>\n\n")
-	b.WriteString(fmt.Sprintf("🏢 <b>%s</b>\n\n", escapeHTML(room.Name)))
+	sb.WriteString("❄️ <b>Кондиционирование</b>\n\n")
+	sb.WriteString(fmt.Sprintf("🏢 <b>%s</b>\n\n", escapeHTML(room.Name)))
 
 	if room.Err != nil {
-		b.WriteString(fmt.Sprintf("⚠️ ошибка: <code>%s</code>\n", escapeHTML(room.Err.Error())))
-		return b.String()
+		sb.WriteString(fmt.Sprintf("⚠️ ошибка: <code>%s</code>\n", escapeHTML(room.Err.Error())))
+		return sb.String()
 	}
 
 	if len(room.Conditioners) == 0 {
-		b.WriteString("Кондиционеры не настроены.\n")
+		sb.WriteString("Кондиционеры не настроены.\n")
 	} else {
 		for _, ac := range room.Conditioners {
 			icon := "🔴"
@@ -110,7 +109,7 @@ func formatRoom(room service.RoomView) string {
 				name = ac.Comment
 			}
 
-			b.WriteString(fmt.Sprintf(
+			sb.WriteString(fmt.Sprintf(
 				"%s %s — %s\n",
 				icon,
 				escapeHTML(name),
@@ -119,9 +118,9 @@ func formatRoom(room service.RoomView) string {
 		}
 	}
 
-	b.WriteString(fmt.Sprintf("\nОбновлено: <code>%s</code>", time.Now().Format("15:04:05")))
+	sb.WriteString(fmt.Sprintf("\nОбновлено: <code>%s</code>", b.clock.FormatTime(b.clock.Now())))
 
-	return b.String()
+	return sb.String()
 }
 
 func formatRoomLoading(action string) string {

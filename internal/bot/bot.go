@@ -8,12 +8,14 @@ import (
 
 	"screenmate-bot/internal/config"
 	"screenmate-bot/internal/service"
+	"screenmate-bot/internal/timeutil"
 )
 
 type Bot struct {
 	api     *tgbotapi.BotAPI
 	cfg     config.Config
 	service *service.Service
+	clock   *timeutil.Clock
 }
 
 func New(cfg config.Config, svc *service.Service) (*Bot, error) {
@@ -22,10 +24,16 @@ func New(cfg config.Config, svc *service.Service) (*Bot, error) {
 		return nil, err
 	}
 
+	clock, err := timeutil.NewNovosibirskClock()
+	if err != nil {
+		return nil, err
+	}
+
 	return &Bot{
 		api:     api,
 		cfg:     cfg,
 		service: svc,
+		clock:   clock,
 	}, nil
 }
 
