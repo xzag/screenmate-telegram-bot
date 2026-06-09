@@ -124,6 +124,13 @@ func formatRoom(room service.RoomView) string {
 	return b.String()
 }
 
+func formatRoomLoading(action string) string {
+	return fmt.Sprintf(
+		"❄️ <b>Кондиционирование</b>\n\n⏳ %s...",
+		escapeHTML(action),
+	)
+}
+
 func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")

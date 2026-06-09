@@ -49,6 +49,11 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	if cb.Data == callbackWait {
+		b.answerCallback(cb.ID, "Команда уже выполняется...")
+		return
+	}
+
 	if cb.Data == callbackRoomsList {
 		b.answerCallback(cb.ID, "Комнаты")
 		b.editRoomsMenu(cb)
@@ -115,6 +120,8 @@ func (b *Bot) handleOpenRoomCallback(cb *tgbotapi.CallbackQuery) {
 	}
 
 	b.answerCallback(cb.ID, "Открываю...")
+	b.editLoading(cb, "Загружаю комнату")
+
 	b.editRoom(cb, roomKey)
 }
 
@@ -127,6 +134,8 @@ func (b *Bot) handleRefreshRoomCallback(cb *tgbotapi.CallbackQuery) {
 	}
 
 	b.answerCallback(cb.ID, "Обновляю...")
+	b.editLoading(cb, "Обновляю комнату")
+
 	b.editRoom(cb, roomKey)
 }
 
@@ -186,6 +195,7 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 	}
 
 	b.answerCallback(cb.ID, "Переключаю...")
+	b.editLoading(cb, "Переключаю кондиционер")
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
@@ -195,13 +205,23 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 		log.Printf("toggle power: %v", err)
 
 		if cb.Message != nil {
-			msg := tgbotapi.NewMessage(
+			edit := tgbotapi.NewEditMessageTextAndMarkup(
 				cb.Message.Chat.ID,
-				"⚠️ Не удалось переключить кондиционер: "+err.Error(),
+				cb.Message.MessageID,
+				"⚠️ <b>Не удалось переключить кондиционер</b>\n\n<code>"+escapeHTML(err.Error())+"</code>",
+				tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить комнату", refreshRoomCallback(roomKey)),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
+					),
+				),
 			)
+			edit.ParseMode = tgbotapi.ModeHTML
 
-			if _, sendErr := b.api.Send(msg); sendErr != nil {
-				log.Printf("send toggle error: %v", sendErr)
+			if _, sendErr := b.api.Send(edit); sendErr != nil {
+				log.Printf("edit toggle error: %v", sendErr)
 			}
 		}
 
@@ -221,4 +241,22 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 	time.Sleep(1 * time.Second)
 
 	b.editRoom(cb, roomKey)
+}
+
+func (b *Bot) editLoading(cb *tgbotapi.CallbackQuery, action string) {
+	if cb.Message == nil {
+		return
+	}
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(
+		cb.Message.Chat.ID,
+		cb.Message.MessageID,
+		formatRoomLoading(action),
+		loadingKeyboard(),
+	)
+	edit.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := b.api.Send(edit); err != nil {
+		log.Printf("edit loading: %v", err)
+	}
 }

@@ -61,3 +61,11 @@ func roomKeyboard(room service.RoomView) tgbotapi.InlineKeyboardMarkup {
 
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
 }
+
+func loadingKeyboard() tgbotapi.InlineKeyboardMarkup {
+	return tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData("⏳ Выполняется...", callbackWait),
+		),
+	)
+}

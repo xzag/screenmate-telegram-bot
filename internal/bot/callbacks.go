@@ -11,6 +11,7 @@ const (
 	callbackOpenRoom     = "r"
 	callbackRefreshRoom  = "rr"
 	callbackTogglePrefix = "t"
+	callbackWait         = "wait"
 )
 
 func roomCallback(roomKey string) string {
