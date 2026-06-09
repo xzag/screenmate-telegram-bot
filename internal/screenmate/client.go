@@ -2,12 +2,15 @@ package screenmate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
 	"time"
 )
+
+var ErrSessionExpired = errors.New("screenmate session expired")
 
 type Client struct {
 	baseURL  string
@@ -33,7 +36,7 @@ func NewClient(baseURL, username, password, roomID string) (*Client, error) {
 		roomID:   roomID,
 		http: &http.Client{
 			Jar:     jar,
-			Timeout: 15 * time.Second,
+			Timeout: 30 * time.Second,
 		},
 	}, nil
 }
@@ -68,7 +71,7 @@ func (c *Client) refreshRoomPage(ctx context.Context) error {
 		return nil
 
 	case pageKindLogin, pageKindRoomLookup:
-		return fmt.Errorf("session expired: page=%s", kind)
+		return fmt.Errorf("%w: page=%s", ErrSessionExpired, kind)
 
 	default:
 		return fmt.Errorf("unexpected page after refresh: page=%s", kind)
@@ -100,8 +103,18 @@ func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
 		return RoomStatus{}, err
 	}
 
-	if err := c.postBack(ctx, "Refresh:Refresh"); err != nil {
+	if err := c.refreshRoomPage(ctx); err != nil {
 		c.Reset()
+
+		// Если сам ctx уже умер — не пытаемся логиниться тем же ctx.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
+		}
+
+		// Relogin имеет смысл только когда сервер сказал "сессия протухла".
+		if !errors.Is(err, ErrSessionExpired) {
+			return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
+		}
 
 		if err := c.ensureRoomPage(ctx); err != nil {
 			return RoomStatus{}, fmt.Errorf("relogin after refresh failed: %w", err)
@@ -237,10 +250,10 @@ func (c *Client) postBack(ctx context.Context, eventTarget string) error {
 		return nil
 
 	case pageKindLogin, pageKindRoomLookup:
-		return fmt.Errorf("session expired: page=%s", kind)
+		return fmt.Errorf("%w: page=%s", ErrSessionExpired, kind)
 
 	default:
-		return fmt.Errorf("unexpected page after postback: page=%s", kind)
+		return fmt.Errorf("unexpected page after refresh: page=%s", kind)
 	}
 }
 
@@ -303,9 +316,16 @@ func (c *Client) TogglePowerIfState(
 		return ToggleResult{}, err
 	}
 
-	// Берем свежее состояние перед нажатием.
 	if err := c.refreshRoomPage(ctx); err != nil {
 		c.Reset()
+
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ToggleResult{}, fmt.Errorf("refresh failed: %w", err)
+		}
+
+		if !errors.Is(err, ErrSessionExpired) {
+			return ToggleResult{}, fmt.Errorf("refresh failed: %w", err)
+		}
 
 		if err := c.ensureRoomPage(ctx); err != nil {
 			return ToggleResult{}, fmt.Errorf("relogin after refresh failed: %w", err)

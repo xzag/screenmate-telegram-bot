@@ -1,10 +1,10 @@
+// internal/bot/handlers.go
+
 package bot
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"strconv"
 	"strings"
 	"time"
 
@@ -18,10 +18,28 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	}
 
 	switch msg.Command() {
-	case "start", "status":
-		b.sendStatus(msg.Chat.ID)
+	case "start":
+		b.sendRoomsMenu(msg.Chat.ID)
+
+	case "status":
+		b.sendAllRoomsStatus(msg.Chat.ID)
+
 	default:
-		b.sendText(msg.Chat.ID, "Команды: /status")
+		b.sendText(msg.Chat.ID, "Команды: /start, /status")
+	}
+}
+
+func (b *Bot) sendAllRoomsStatus(chatID int64) {
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
+	defer cancel()
+
+	rooms := b.service.AllRoomsStatus(ctx)
+
+	msg := tgbotapi.NewMessage(chatID, formatAllRooms(rooms))
+	msg.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := b.api.Send(msg); err != nil {
+		log.Printf("send all rooms status: %v", err)
 	}
 }
 
@@ -31,8 +49,19 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	if cb.Data == callbackRefreshAll {
-		b.editStatus(cb)
+	if cb.Data == callbackRoomsList {
+		b.answerCallback(cb.ID, "Комнаты")
+		b.editRoomsMenu(cb)
+		return
+	}
+
+	if strings.HasPrefix(cb.Data, callbackOpenRoom+":") {
+		b.handleOpenRoomCallback(cb)
+		return
+	}
+
+	if strings.HasPrefix(cb.Data, callbackRefreshRoom+":") {
+		b.handleRefreshRoomCallback(cb)
 		return
 	}
 
@@ -44,6 +73,110 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	b.answerCallback(cb.ID, "Неизвестная команда")
 }
 
+func (b *Bot) sendRoomsMenu(chatID int64) {
+	rooms := b.service.Rooms()
+
+	msg := tgbotapi.NewMessage(chatID, formatRoomsMenu(rooms))
+	msg.ParseMode = tgbotapi.ModeHTML
+	msg.ReplyMarkup = roomsKeyboard(rooms)
+
+	if _, err := b.api.Send(msg); err != nil {
+		log.Printf("send rooms menu: %v", err)
+	}
+}
+
+func (b *Bot) editRoomsMenu(cb *tgbotapi.CallbackQuery) {
+	if cb.Message == nil {
+		return
+	}
+
+	rooms := b.service.Rooms()
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(
+		cb.Message.Chat.ID,
+		cb.Message.MessageID,
+		formatRoomsMenu(rooms),
+		roomsKeyboard(rooms),
+	)
+	edit.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := b.api.Send(edit); err != nil {
+		log.Printf("edit rooms menu: %v", err)
+		return
+	}
+}
+
+func (b *Bot) handleOpenRoomCallback(cb *tgbotapi.CallbackQuery) {
+	roomKey, err := parseRoomCallback(cb.Data, callbackOpenRoom)
+	if err != nil {
+		log.Printf("parse open room callback: %v", err)
+		b.answerCallback(cb.ID, "Некорректная кнопка")
+		return
+	}
+
+	b.answerCallback(cb.ID, "Открываю...")
+	b.editRoom(cb, roomKey)
+}
+
+func (b *Bot) handleRefreshRoomCallback(cb *tgbotapi.CallbackQuery) {
+	roomKey, err := parseRoomCallback(cb.Data, callbackRefreshRoom)
+	if err != nil {
+		log.Printf("parse refresh room callback: %v", err)
+		b.answerCallback(cb.ID, "Некорректная кнопка")
+		return
+	}
+
+	b.answerCallback(cb.ID, "Обновляю...")
+	b.editRoom(cb, roomKey)
+}
+
+func (b *Bot) editRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
+	if cb.Message == nil {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
+	defer cancel()
+
+	room, err := b.service.RoomStatus(ctx, roomKey)
+	if err != nil {
+		log.Printf("room status roomKey=%q: %v", roomKey, err)
+
+		text := "⚠️ <b>Не удалось открыть комнату</b>\n\n<code>" + escapeHTML(err.Error()) + "</code>"
+
+		edit := tgbotapi.NewEditMessageTextAndMarkup(
+			cb.Message.Chat.ID,
+			cb.Message.MessageID,
+			text,
+			tgbotapi.NewInlineKeyboardMarkup(
+				tgbotapi.NewInlineKeyboardRow(
+					tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
+				),
+			),
+		)
+		edit.ParseMode = tgbotapi.ModeHTML
+
+		if _, sendErr := b.api.Send(edit); sendErr != nil {
+			log.Printf("edit room error: %v", sendErr)
+		}
+
+		return
+	}
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(
+		cb.Message.Chat.ID,
+		cb.Message.MessageID,
+		formatRoom(room),
+		roomKeyboard(room),
+	)
+	edit.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := b.api.Send(edit); err != nil {
+		log.Printf("edit room: %v", err)
+		return
+	}
+}
+
 func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 	roomKey, acNumber, expectedPower, err := parseToggleCallback(cb.Data)
 	if err != nil {
@@ -52,7 +185,7 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
-	b.answerCallback(cb.ID, "Проверяю состояние...")
+	b.answerCallback(cb.ID, "Переключаю...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
@@ -87,78 +220,5 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 
 	time.Sleep(1 * time.Second)
 
-	b.editStatus(cb)
-}
-
-func parseToggleCallback(data string) (roomKey string, acNumber int, expectedPower bool, err error) {
-	parts := strings.Split(data, ":")
-	if len(parts) != 4 {
-		return "", 0, false, fmt.Errorf("invalid callback data: %q", data)
-	}
-
-	if parts[0] != callbackTogglePrefix {
-		return "", 0, false, fmt.Errorf("invalid callback prefix: %q", parts[0])
-	}
-
-	acNumber, err = strconv.Atoi(parts[2])
-	if err != nil {
-		return "", 0, false, fmt.Errorf("invalid ac number: %w", err)
-	}
-
-	switch parts[3] {
-	case "1":
-		expectedPower = true
-	case "0":
-		expectedPower = false
-	default:
-		return "", 0, false, fmt.Errorf("invalid expected power: %q", parts[3])
-	}
-
-	return parts[1], acNumber, expectedPower, nil
-}
-
-func (b *Bot) sendStatus(chatID int64) {
-	text, keyboard := b.loadStatus()
-
-	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = tgbotapi.ModeHTML
-	msg.ReplyMarkup = keyboard
-
-	if _, err := b.api.Send(msg); err != nil {
-		log.Printf("send status: %v", err)
-	}
-}
-
-func (b *Bot) editStatus(cb *tgbotapi.CallbackQuery) {
-	if cb.Message == nil {
-		b.answerCallback(cb.ID, "Не удалось обновить сообщение")
-		return
-	}
-
-	text, keyboard := b.loadStatus()
-
-	edit := tgbotapi.NewEditMessageTextAndMarkup(
-		cb.Message.Chat.ID,
-		cb.Message.MessageID,
-		text,
-		keyboard,
-	)
-	edit.ParseMode = tgbotapi.ModeHTML
-
-	if _, err := b.api.Send(edit); err != nil {
-		log.Printf("edit status: %v", err)
-		b.answerCallback(cb.ID, "Не удалось обновить")
-		return
-	}
-
-	b.answerCallback(cb.ID, "Обновлено")
-}
-
-func (b *Bot) loadStatus() (string, tgbotapi.InlineKeyboardMarkup) {
-	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
-	defer cancel()
-
-	rooms := b.service.AllRoomsStatus(ctx)
-
-	return formatAllRooms(rooms), statusKeyboard(rooms)
+	b.editRoom(cb, roomKey)
 }

@@ -21,3 +21,8 @@ type ToggleResult struct {
 	StateChanged bool
 	CurrentPower bool
 }
+
+type RoomShort struct {
+	Key  string
+	Name string
+}

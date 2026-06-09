@@ -64,6 +64,66 @@ func formatAllRooms(rooms []service.RoomView) string {
 	return b.String()
 }
 
+func formatRoomsMenu(rooms []service.RoomShort) string {
+	var b strings.Builder
+
+	b.WriteString("❄️ <b>Кондиционирование</b>\n\n")
+
+	if len(rooms) == 0 {
+		b.WriteString("Комнаты не настроены.")
+		return b.String()
+	}
+
+	b.WriteString("Выбери комнату:")
+
+	return b.String()
+}
+
+func formatRoom(room service.RoomView) string {
+	var b strings.Builder
+
+	b.WriteString("❄️ <b>Кондиционирование</b>\n\n")
+	b.WriteString(fmt.Sprintf("🏢 <b>%s</b>\n\n", escapeHTML(room.Name)))
+
+	if room.Err != nil {
+		b.WriteString(fmt.Sprintf("⚠️ ошибка: <code>%s</code>\n", escapeHTML(room.Err.Error())))
+		return b.String()
+	}
+
+	if len(room.Conditioners) == 0 {
+		b.WriteString("Кондиционеры не настроены.\n")
+	} else {
+		for _, ac := range room.Conditioners {
+			icon := "🔴"
+			state := "выключен"
+
+			if !ac.Found {
+				icon = "⚪"
+				state = "не найден"
+			} else if ac.Power {
+				icon = "🟢"
+				state = "включен"
+			}
+
+			name := fmt.Sprintf("Кондиционер %d", ac.Number)
+			if ac.Comment != "" {
+				name = ac.Comment
+			}
+
+			b.WriteString(fmt.Sprintf(
+				"%s %s — %s\n",
+				icon,
+				escapeHTML(name),
+				state,
+			))
+		}
+	}
+
+	b.WriteString(fmt.Sprintf("\nОбновлено: <code>%s</code>", time.Now().Format("15:04:05")))
+
+	return b.String()
+}
+
 func escapeHTML(s string) string {
 	s = strings.ReplaceAll(s, "&", "&amp;")
 	s = strings.ReplaceAll(s, "<", "&lt;")

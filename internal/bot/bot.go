@@ -71,5 +71,5 @@ func (b *Bot) isAllowed(_ int64) bool {
 }
 
 func contextTimeout() time.Duration {
-	return 40 * time.Second
+	return 60 * time.Second
 }

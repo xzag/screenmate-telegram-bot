@@ -54,6 +54,36 @@ func New(cfg config.Config) *Service {
 	return s
 }
 
+func (s *Service) Rooms() []RoomShort {
+	result := make([]RoomShort, 0, len(s.rooms))
+
+	for _, room := range s.rooms {
+		result = append(result, RoomShort{
+			Key:  room.Key,
+			Name: room.Name,
+		})
+	}
+
+	return result
+}
+
+func (s *Service) RoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
+	for _, room := range s.rooms {
+		if room.Key != roomKey {
+			continue
+		}
+
+		view := s.roomStatus(ctx, room)
+		if view.Err != nil {
+			return view, view.Err
+		}
+
+		return view, nil
+	}
+
+	return RoomView{}, fmt.Errorf("room %q not found", roomKey)
+}
+
 func (s *Service) AllRoomsStatus(ctx context.Context) []RoomView {
 	views := make([]RoomView, len(s.rooms))
 
@@ -175,6 +205,7 @@ func (s *roomSession) status(ctx context.Context) (screenmate.RoomStatus, error)
 	status, err := client.Status(ctx)
 	if err != nil {
 		client.Reset()
+		s.client = nil // важно: следующий раз создадим полностью свежий client
 		return screenmate.RoomStatus{}, err
 	}
 
@@ -222,6 +253,7 @@ func (s *roomSession) togglePowerIfState(
 	result, err := client.TogglePowerIfState(ctx, acNumber, expectedPower)
 	if err != nil {
 		client.Reset()
+		s.client = nil
 		return ToggleResult{}, err
 	}
 

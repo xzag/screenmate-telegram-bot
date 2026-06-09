@@ -8,57 +8,55 @@ import (
 	"screenmate-bot/internal/service"
 )
 
-const (
-	callbackRefreshAll   = "refresh_all"
-	callbackTogglePrefix = "t"
-)
-
-func statusKeyboard(rooms []service.RoomView) tgbotapi.InlineKeyboardMarkup {
-	var rows [][]tgbotapi.InlineKeyboardButton
+func roomsKeyboard(rooms []service.RoomShort) tgbotapi.InlineKeyboardMarkup {
+	rows := make([][]tgbotapi.InlineKeyboardButton, 0, len(rooms))
 
 	for _, room := range rooms {
-		if room.Err != nil {
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(room.Name, roomCallback(room.Key)),
+		))
+	}
+
+	return tgbotapi.NewInlineKeyboardMarkup(rows...)
+}
+
+func roomKeyboard(room service.RoomView) tgbotapi.InlineKeyboardMarkup {
+	var rows [][]tgbotapi.InlineKeyboardButton
+
+	for _, ac := range room.Conditioners {
+		if !ac.Found {
 			continue
 		}
 
-		for _, ac := range room.Conditioners {
-			if !ac.Found {
-				continue
-			}
+		icon := "🔴"
+		action := "включить"
 
-			currentState := 0
-			icon := "🔴"
-			action := "включить"
-
-			if ac.Power {
-				currentState = 1
-				icon = "🟢"
-				action = "выключить"
-			}
-
-			name := fmt.Sprintf("Кондиционер %d", ac.Number)
-			if ac.Comment != "" {
-				name = ac.Comment
-			}
-
-			label := fmt.Sprintf("%s %s · %s", icon, name, action)
-
-			callbackData := fmt.Sprintf(
-				"%s:%s:%d:%d",
-				callbackTogglePrefix,
-				room.Key,
-				ac.Number,
-				currentState,
-			)
-
-			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-				tgbotapi.NewInlineKeyboardButtonData(label, callbackData),
-			))
+		if ac.Power {
+			icon = "🟢"
+			action = "выключить"
 		}
+
+		name := fmt.Sprintf("Кондиционер %d", ac.Number)
+		if ac.Comment != "" {
+			name = ac.Comment
+		}
+
+		label := fmt.Sprintf("%s %s · %s", icon, name, action)
+
+		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				label,
+				toggleCallback(room.Key, ac.Number, ac.Power),
+			),
+		))
 	}
 
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
-		tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить", callbackRefreshAll),
+		tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить комнату", refreshRoomCallback(room.Key)),
+	))
+
+	rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+		tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
 	))
 
 	return tgbotapi.NewInlineKeyboardMarkup(rows...)
