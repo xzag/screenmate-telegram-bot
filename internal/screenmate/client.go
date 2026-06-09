@@ -105,8 +105,8 @@ func (c *Client) Status(ctx context.Context, refresh bool) (RoomStatus, error) {
 		return RoomStatus{}, err
 	}
 
-	// Если мы только что сделали login + selectRoom, страница уже свежая.
-	// Не надо сразу дергать refresh.
+	// Если сессии не было, ensureRoomPage сделал login + selectRoom.
+	// selectRoom уже вернул свежую страницу, поэтому дополнительный refresh не нужен.
 	if refresh && wasReady {
 		if err := c.refreshRoomPage(ctx); err != nil {
 			c.Reset()

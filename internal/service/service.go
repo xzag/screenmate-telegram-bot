@@ -84,10 +84,6 @@ func (s *Service) refreshRoomStatusByKey(ctx context.Context, roomKey string, re
 	return RoomView{}, fmt.Errorf("room %q not found", roomKey)
 }
 
-func (s *Service) RoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
-	return s.refreshRoomStatusByKey(ctx, roomKey, false)
-}
-
 func (s *Service) RefreshRoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
 	return s.refreshRoomStatusByKey(ctx, roomKey, true)
 }

@@ -133,7 +133,7 @@ func (b *Bot) handleOpenRoomCallback(cb *tgbotapi.CallbackQuery) {
 	b.answerCallback(cb.ID, "Открываю...")
 	b.editLoading(cb, "Загружаю комнату")
 
-	b.editRoom(cb, roomKey)
+	b.editRefreshedRoom(cb, roomKey)
 }
 
 func (b *Bot) handleRefreshRoomCallback(cb *tgbotapi.CallbackQuery) {
@@ -147,10 +147,10 @@ func (b *Bot) handleRefreshRoomCallback(cb *tgbotapi.CallbackQuery) {
 	b.answerCallback(cb.ID, "Обновляю...")
 	b.editLoading(cb, "Обновляю комнату")
 
-	b.editRoom(cb, roomKey)
+	b.editRefreshedRoom(cb, roomKey)
 }
 
-func (b *Bot) editRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
+func (b *Bot) editRefreshedRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
 	if cb.Message == nil {
 		return
 	}
@@ -158,26 +158,14 @@ func (b *Bot) editRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
-	room, err := b.service.RoomStatus(ctx, roomKey)
+	room, err := b.service.RefreshRoomStatus(ctx, roomKey)
 	if err != nil {
-		log.Printf("room status roomKey=%q: %v", roomKey, err)
-
-		b.editRoomError(cb, roomKey, "Не удалось открыть комнату", err)
+		log.Printf("refresh room status roomKey=%q: %v", roomKey, err)
+		b.editRoomError(cb, roomKey, "Не удалось обновить комнату", err)
 		return
 	}
 
-	edit := tgbotapi.NewEditMessageTextAndMarkup(
-		cb.Message.Chat.ID,
-		cb.Message.MessageID,
-		b.formatRoom(room),
-		roomKeyboard(room),
-	)
-	edit.ParseMode = tgbotapi.ModeHTML
-
-	if _, err := b.api.Send(edit); err != nil {
-		log.Printf("edit room: %v", err)
-		return
-	}
+	b.editRoomView(cb, room)
 }
 
 func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
