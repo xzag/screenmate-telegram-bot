@@ -3,7 +3,6 @@ package screenmate
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"net/http/cookiejar"
 	"strings"
@@ -39,13 +38,44 @@ func NewClient(baseURL, username, password, roomID string) (*Client, error) {
 	}, nil
 }
 
-func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
+func (c *Client) Reset() {
+	jar, _ := cookiejar.New(nil)
+
+	c.http.Jar = jar
+	c.currentPage = nil
+}
+
+func (c *Client) ensureRoomPage(ctx context.Context) error {
+	if c.currentPage != nil && isRoomControlPage(c.currentPage) {
+		return nil
+	}
+
 	if err := c.login(ctx); err != nil {
-		return RoomStatus{}, fmt.Errorf("login: %w", err)
+		return fmt.Errorf("login: %w", err)
 	}
 
 	if err := c.selectRoom(ctx); err != nil {
-		return RoomStatus{}, fmt.Errorf("select room: %w", err)
+		return fmt.Errorf("select room: %w", err)
+	}
+
+	if !isRoomControlPage(c.currentPage) {
+		return fmt.Errorf("room control page not reached")
+	}
+
+	return nil
+}
+
+func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
+	if err := c.ensureRoomPage(ctx); err != nil {
+		return RoomStatus{}, err
+	}
+
+	if err := c.refreshRoomPage(ctx); err != nil {
+		c.Reset()
+
+		if err := c.ensureRoomPage(ctx); err != nil {
+			return RoomStatus{}, fmt.Errorf("relogin after refresh failed: %w", err)
+		}
 	}
 
 	acs, err := ParseAirConditioners(c.currentPage.Doc)
@@ -60,15 +90,9 @@ func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
 	}, nil
 }
 
-// internal/screenmate/client.go
-
 func (c *Client) TogglePower(ctx context.Context, acNumber int) error {
-	if err := c.login(ctx); err != nil {
-		return fmt.Errorf("login: %w", err)
-	}
-
-	if err := c.selectRoom(ctx); err != nil {
-		return fmt.Errorf("select room: %w", err)
+	if err := c.ensureRoomPage(ctx); err != nil {
+		return err
 	}
 
 	acs, err := ParseAirConditioners(c.currentPage.Doc)
@@ -76,53 +100,27 @@ func (c *Client) TogglePower(ctx context.Context, acNumber int) error {
 		return fmt.Errorf("parse conditioners: %w", err)
 	}
 
-	var ac AirConditioner
-	found := false
+	var target string
 
-	for _, item := range acs {
-		if item.Number == acNumber {
-			ac = item
-			found = true
+	for _, ac := range acs {
+		if ac.Number == acNumber {
+			target = ac.ToggleTarget
 			break
 		}
 	}
 
-	if !found {
+	if target == "" {
 		return fmt.Errorf("air conditioner %d not found", acNumber)
 	}
 
-	if ac.ToggleTarget == "" {
-		return fmt.Errorf("air conditioner %d has empty toggle target", acNumber)
-	}
+	if err := c.postBack(ctx, target); err != nil {
+		c.Reset()
 
-	log.Printf(
-		"toggle ac=%d currentPower=%v target=%q pageURL=%q action=%q",
-		ac.Number,
-		ac.Power,
-		ac.ToggleTarget,
-		c.currentPage.URL,
-		c.currentPage.Action,
-	)
-
-	if err := c.click(ctx, ac.ToggleTarget); err != nil {
-		return fmt.Errorf("click toggle: %w", err)
-	}
-
-	after, err := ParseAirConditioners(c.currentPage.Doc)
-	if err != nil {
-		return fmt.Errorf("parse after toggle: %w", err)
-	}
-
-	for _, item := range after {
-		if item.Number == acNumber {
-			log.Printf(
-				"after toggle ac=%d power=%v target=%q",
-				item.Number,
-				item.Power,
-				item.ToggleTarget,
-			)
-			break
+		if err := c.ensureRoomPage(ctx); err != nil {
+			return fmt.Errorf("relogin after toggle failed: %w", err)
 		}
+
+		return fmt.Errorf("toggle failed, session was reset: %w", err)
 	}
 
 	return nil
@@ -191,7 +189,7 @@ func (c *Client) selectRoom(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) click(ctx context.Context, eventTarget string) error {
+func (c *Client) postBack(ctx context.Context, eventTarget string) error {
 	if c.currentPage == nil {
 		return fmt.Errorf("current page is empty")
 	}
@@ -202,13 +200,34 @@ func (c *Client) click(ctx context.Context, eventTarget string) error {
 	form.Set("__EVENTARGUMENT", "")
 	form.Set("__LASTFOCUS", "")
 
-	log.Printf(
-		"toggle post eventTarget=%q roomIdPresent=%v action=%q referer=%q",
-		eventTarget,
-		form.Get("roomId") != "",
-		c.currentPage.Action,
-		c.currentPage.URL,
-	)
+	nextPage, err := c.postPageForm(ctx, c.currentPage.Action, form, c.currentPage.URL)
+	if err != nil {
+		return err
+	}
+
+	c.currentPage = nextPage
+
+	if isLoginPageBody(nextPage.Body) || isRoomLookupPageBody(nextPage.Body) {
+		return fmt.Errorf("session expired")
+	}
+
+	if !isRoomControlPage(nextPage) {
+		return fmt.Errorf("unexpected page after postback")
+	}
+
+	return nil
+}
+
+func (c *Client) refreshRoomPage(ctx context.Context) error {
+	if c.currentPage == nil {
+		return fmt.Errorf("current page is empty")
+	}
+
+	form := cloneValues(c.currentPage.Values)
+
+	form.Set("__EVENTTARGET", "Refresh:Refresh")
+	form.Set("__EVENTARGUMENT", "")
+	form.Set("__LASTFOCUS", "")
 
 	nextPage, err := c.postPageForm(ctx, c.currentPage.Action, form, c.currentPage.URL)
 	if err != nil {
@@ -217,8 +236,12 @@ func (c *Client) click(ctx context.Context, eventTarget string) error {
 
 	c.currentPage = nextPage
 
-	if strings.Contains(nextPage.Body, "Correct these errors") {
-		return fmt.Errorf("screenmate returned validation error")
+	if isLoginPageBody(nextPage.Body) || isRoomLookupPageBody(nextPage.Body) {
+		return fmt.Errorf("session expired")
+	}
+
+	if !isRoomControlPage(nextPage) {
+		return fmt.Errorf("unexpected page after refresh")
 	}
 
 	return nil
@@ -228,4 +251,24 @@ func isLoginPage(body string) bool {
 	return strings.Contains(body, `id="LoginForm"`) ||
 		strings.Contains(body, `name="userName"`) ||
 		strings.Contains(body, `name="password"`)
+}
+
+func isRoomControlPage(page *PageForm) bool {
+	if page == nil {
+		return false
+	}
+
+	return strings.Contains(page.Body, `id="dataList"`) &&
+		strings.Contains(page.Body, `dataList_toggle_`)
+}
+
+func isLoginPageBody(body string) bool {
+	return strings.Contains(body, `id="LoginForm"`) ||
+		strings.Contains(body, `name="userName"`) ||
+		strings.Contains(body, `name="password"`)
+}
+
+func isRoomLookupPageBody(body string) bool {
+	return strings.Contains(body, `name="roomId"`) &&
+		strings.Contains(body, `lookUpRoomId`)
 }
