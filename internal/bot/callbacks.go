@@ -11,7 +11,10 @@ const (
 	callbackOpenRoom     = "r"
 	callbackRefreshRoom  = "rr"
 	callbackTogglePrefix = "t"
-	callbackWait         = "wait"
+	callbackTempPrefix   = "tp"
+
+	callbackWait = "wait"
+	callbackNoop = "noop"
 )
 
 func roomCallback(roomKey string) string {
@@ -69,4 +72,32 @@ func parseToggleCallback(data string) (roomKey string, acNumber int, expectedPow
 	}
 
 	return parts[1], acNumber, expectedPower, nil
+}
+
+func temperatureCallback(roomKey string, acNumber int, direction string, expectedSetpoint string) string {
+	return fmt.Sprintf("%s:%s:%d:%s:%s", callbackTempPrefix, roomKey, acNumber, direction, expectedSetpoint)
+}
+
+func parseTemperatureCallback(data string) (roomKey string, acNumber int, direction string, expectedSetpoint string, err error) {
+	parts := strings.Split(data, ":")
+	if len(parts) != 5 {
+		return "", 0, "", "", fmt.Errorf("invalid temperature callback data: %q", data)
+	}
+
+	if parts[0] != callbackTempPrefix {
+		return "", 0, "", "", fmt.Errorf("invalid temperature callback prefix: %q", parts[0])
+	}
+
+	acNumber, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return "", 0, "", "", fmt.Errorf("invalid ac number: %w", err)
+	}
+
+	switch parts[3] {
+	case "u", "d":
+	default:
+		return "", 0, "", "", fmt.Errorf("invalid temperature direction: %q", parts[3])
+	}
+
+	return parts[1], acNumber, parts[3], parts[4], nil
 }

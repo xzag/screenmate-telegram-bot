@@ -143,6 +143,10 @@ func (s *Service) roomStatus(ctx context.Context, room config.RoomConfig) RoomVi
 			Comment: room.Conditioners[number],
 			Power:   ac.Power,
 			Found:   found,
+
+			HasSetpoint:  found && ac.HasSetpoint,
+			Setpoint:     ac.Setpoint.Value,
+			SetpointUnit: ac.Setpoint.Unit,
 		})
 	}
 
@@ -282,4 +286,55 @@ func (s *Service) TogglePowerIfState(
 	}
 
 	return session.togglePowerIfState(ctx, acNumber, expectedPower)
+}
+
+func (s *Service) AdjustTemperatureIfState(
+	ctx context.Context,
+	roomKey string,
+	acNumber int,
+	direction screenmate.TemperatureDirection,
+	expectedSetpoint string,
+) (TemperatureResult, error) {
+	session, ok := s.sessions[roomKey]
+	if !ok {
+		return TemperatureResult{}, fmt.Errorf("room %q not found", roomKey)
+	}
+
+	if _, ok := session.room.Conditioners[acNumber]; !ok {
+		return TemperatureResult{}, fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
+	}
+
+	return session.adjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
+}
+
+func (s *roomSession) adjustTemperatureIfState(
+	ctx context.Context,
+	acNumber int,
+	direction screenmate.TemperatureDirection,
+	expectedSetpoint string,
+) (TemperatureResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.maybeResetIdle()
+
+	client, err := s.getClient()
+	if err != nil {
+		return TemperatureResult{}, err
+	}
+
+	result, err := client.AdjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
+	if err != nil {
+		client.Reset()
+		s.client = nil
+		return TemperatureResult{}, err
+	}
+
+	s.lastUsed = time.Now()
+
+	return TemperatureResult{
+		Changed:         result.Changed,
+		StateChanged:    result.StateChanged,
+		CurrentSetpoint: result.CurrentSetpoint,
+	}, nil
 }

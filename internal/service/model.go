@@ -14,6 +14,10 @@ type ConditionerView struct {
 	Comment string
 	Power   bool
 	Found   bool
+
+	HasSetpoint  bool
+	Setpoint     string
+	SetpointUnit string
 }
 
 type ToggleResult struct {
@@ -25,4 +29,10 @@ type ToggleResult struct {
 type RoomShort struct {
 	Key  string
 	Name string
+}
+
+type TemperatureResult struct {
+	Changed         bool
+	StateChanged    bool
+	CurrentSetpoint string
 }

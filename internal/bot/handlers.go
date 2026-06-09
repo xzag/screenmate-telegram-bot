@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"log"
+	"screenmate-bot/internal/screenmate"
 	"strings"
 	"time"
 
@@ -47,6 +48,11 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	if cb.Data == callbackNoop {
+		b.answerCallback(cb.ID, "")
+		return
+	}
+
 	if cb.Data == callbackWait {
 		b.answerCallback(cb.ID, "Команда уже выполняется...")
 		return
@@ -55,6 +61,11 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	if cb.Data == callbackRoomsList {
 		b.answerCallback(cb.ID, "Комнаты")
 		b.editRoomsMenu(cb)
+		return
+	}
+
+	if strings.HasPrefix(cb.Data, callbackTempPrefix+":") {
+		b.handleTemperatureCallback(cb)
 		return
 	}
 
@@ -257,4 +268,69 @@ func (b *Bot) editLoading(cb *tgbotapi.CallbackQuery, action string) {
 	if _, err := b.api.Send(edit); err != nil {
 		log.Printf("edit loading: %v", err)
 	}
+}
+
+func (b *Bot) handleTemperatureCallback(cb *tgbotapi.CallbackQuery) {
+	roomKey, acNumber, directionRaw, expectedSetpoint, err := parseTemperatureCallback(cb.Data)
+	if err != nil {
+		log.Printf("parse temperature callback: %v", err)
+		b.answerCallback(cb.ID, "Некорректная кнопка")
+		return
+	}
+
+	b.answerCallback(cb.ID, "Меняю температуру...")
+	b.editLoading(cb, "Меняю температуру")
+
+	var direction screenmate.TemperatureDirection
+	switch directionRaw {
+	case "u":
+		direction = screenmate.TemperatureUp
+	case "d":
+		direction = screenmate.TemperatureDown
+	default:
+		b.answerCallback(cb.ID, "Некорректное направление")
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
+	defer cancel()
+
+	result, err := b.service.AdjustTemperatureIfState(ctx, roomKey, acNumber, direction, expectedSetpoint)
+	if err != nil {
+		log.Printf("adjust temperature: %v", err)
+		if cb.Message != nil {
+			edit := tgbotapi.NewEditMessageTextAndMarkup(
+				cb.Message.Chat.ID,
+				cb.Message.MessageID,
+				"⚠️ <b>Не удалось изменить температуру</b>\n\n<code>"+escapeHTML(err.Error())+"</code>",
+				tgbotapi.NewInlineKeyboardMarkup(
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить комнату", refreshRoomCallback(roomKey)),
+					),
+					tgbotapi.NewInlineKeyboardRow(
+						tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
+					),
+				),
+			)
+			edit.ParseMode = tgbotapi.ModeHTML
+
+			if _, sendErr := b.api.Send(edit); sendErr != nil {
+				log.Printf("adjust temperature error: %v", sendErr)
+			}
+		}
+	}
+
+	if result.StateChanged {
+		log.Printf(
+			"skip temperature change: room=%s ac=%d expected=%s current=%s",
+			roomKey,
+			acNumber,
+			expectedSetpoint,
+			result.CurrentSetpoint,
+		)
+	}
+
+	time.Sleep(1 * time.Second)
+
+	b.editRoom(cb, roomKey)
 }

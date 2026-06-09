@@ -375,3 +375,84 @@ func (c *Client) TogglePowerIfState(
 		CurrentPower: !expectedPower,
 	}, nil
 }
+
+type TemperatureDirection string
+
+const (
+	TemperatureUp   TemperatureDirection = "up"
+	TemperatureDown TemperatureDirection = "down"
+)
+
+func (c *Client) AdjustTemperatureIfState(
+	ctx context.Context,
+	acNumber int,
+	direction TemperatureDirection,
+	expectedSetpoint string,
+) (TemperatureResult, error) {
+	if err := c.ensureRoomPage(ctx); err != nil {
+		return TemperatureResult{}, err
+	}
+
+	if err := c.refreshRoomPage(ctx); err != nil {
+		c.Reset()
+		return TemperatureResult{}, fmt.Errorf("refresh failed: %w", err)
+	}
+
+	acs, err := ParseAirConditioners(c.currentPage.Doc)
+	if err != nil {
+		return TemperatureResult{}, fmt.Errorf("parse conditioners: %w", err)
+	}
+
+	var ac AirConditioner
+	found := false
+
+	for _, item := range acs {
+		if item.Number == acNumber {
+			ac = item
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return TemperatureResult{}, fmt.Errorf("air conditioner %d not found", acNumber)
+	}
+
+	if !ac.HasSetpoint {
+		return TemperatureResult{}, fmt.Errorf("air conditioner %d has no setpoint control", acNumber)
+	}
+
+	if ac.Setpoint.Value != expectedSetpoint {
+		return TemperatureResult{
+			Changed:         false,
+			StateChanged:    true,
+			CurrentSetpoint: ac.Setpoint.Value,
+		}, nil
+	}
+
+	var target string
+
+	switch direction {
+	case TemperatureUp:
+		target = ac.Setpoint.IncreaseTarget
+	case TemperatureDown:
+		target = ac.Setpoint.DecreaseTarget
+	default:
+		return TemperatureResult{}, fmt.Errorf("unknown temperature direction %q", direction)
+	}
+
+	if target == "" {
+		return TemperatureResult{}, fmt.Errorf("air conditioner %d has no target for temperature %s", acNumber, direction)
+	}
+
+	if err := c.postBack(ctx, target); err != nil {
+		c.Reset()
+		return TemperatureResult{}, fmt.Errorf("adjust temperature failed: %w", err)
+	}
+
+	return TemperatureResult{
+		Changed:         true,
+		StateChanged:    false,
+		CurrentSetpoint: ac.Setpoint.Value,
+	}, nil
+}

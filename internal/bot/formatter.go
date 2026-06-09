@@ -36,11 +36,14 @@ func (b *Bot) formatAllRooms(rooms []service.RoomView) string {
 
 		for _, ac := range room.Conditioners {
 			icon := "🔴"
+			state := "выключен"
 
 			if !ac.Found {
 				icon = "⚪"
+				state = "не найден"
 			} else if ac.Power {
 				icon = "🟢"
+				state = "включен"
 			}
 
 			label := fmt.Sprintf("Кондиционер %d", ac.Number)
@@ -48,10 +51,17 @@ func (b *Bot) formatAllRooms(rooms []service.RoomView) string {
 				label += " — " + ac.Comment
 			}
 
+			setpoint := ""
+			if ac.HasSetpoint {
+				setpoint = fmt.Sprintf(", %s%s", ac.Setpoint, ac.SetpointUnit)
+			}
+
 			sb.WriteString(fmt.Sprintf(
-				"%s %s\n",
+				"%s %s - %s%s\n",
 				icon,
 				escapeHTML(label),
+				state,
+				escapeHTML(setpoint),
 			))
 		}
 
@@ -109,11 +119,17 @@ func (b *Bot) formatRoom(room service.RoomView) string {
 				name = ac.Comment
 			}
 
+			setpoint := ""
+			if ac.HasSetpoint {
+				setpoint = fmt.Sprintf(", %s%s", ac.Setpoint, ac.SetpointUnit)
+			}
+
 			sb.WriteString(fmt.Sprintf(
-				"%s %s — %s\n",
+				"%s %s — %s%s\n",
 				icon,
 				escapeHTML(name),
 				state,
+				escapeHTML(setpoint),
 			))
 		}
 	}

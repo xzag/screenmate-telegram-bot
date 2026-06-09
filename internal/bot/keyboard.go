@@ -41,14 +41,33 @@ func roomKeyboard(room service.RoomView) tgbotapi.InlineKeyboardMarkup {
 			name = ac.Comment
 		}
 
-		label := fmt.Sprintf("%s %s · %s", icon, name, action)
+		powerLabel := fmt.Sprintf("%s %s · %s", icon, name, action)
 
 		rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 			tgbotapi.NewInlineKeyboardButtonData(
-				label,
+				powerLabel,
 				toggleCallback(room.Key, ac.Number, ac.Power),
 			),
 		))
+
+		if ac.HasSetpoint {
+			tempLabel := fmt.Sprintf("🌡 %s%s", ac.Setpoint, ac.SetpointUnit)
+
+			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🥶",
+					temperatureCallback(room.Key, ac.Number, "d", ac.Setpoint),
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					tempLabel,
+					callbackNoop,
+				),
+				tgbotapi.NewInlineKeyboardButtonData(
+					"🔥",
+					temperatureCallback(room.Key, ac.Number, "u", ac.Setpoint),
+				),
+			))
+		}
 	}
 
 	rows = append(rows, tgbotapi.NewInlineKeyboardRow(

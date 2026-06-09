@@ -2,6 +2,7 @@ package screenmate
 
 import (
 	"html"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -9,44 +10,95 @@ import (
 )
 
 func ParseAirConditioners(doc *goquery.Document) ([]AirConditioner, error) {
-	var result []AirConditioner
+	byNumber := make(map[int]*AirConditioner)
 
-	doc.Find("a").Each(func(_ int, a *goquery.Selection) {
-		id, ok := a.Attr("id")
-		if !ok || !strings.HasPrefix(id, "dataList_toggle_") {
-			return
-		}
-
-		itemTable := a.Closest("table.item")
-		if itemTable.Length() == 0 {
-			return
-		}
-
-		name := normalizeText(itemTable.Find("td.itemName").First().Text())
+	doc.Find("table.item").Each(func(_ int, table *goquery.Selection) {
+		name := normalizeText(table.Find("td.itemName").First().Text())
 
 		number, ok := parseACNumber(name)
 		if !ok {
 			return
 		}
 
-		valueText := normalizeText(a.Find("span.itemValue").First().Text())
-
-		href, _ := a.Attr("href")
-		target, ok := postBackTargetFromHref(href)
-		if !ok {
-			// fallback, если вдруг href поменяется
-			target, ok = postBackTargetFromToggleID(id)
-			if !ok {
-				return
-			}
+		ac := byNumber[number]
+		if ac == nil {
+			ac = &AirConditioner{Number: number}
+			byNumber[number] = ac
 		}
 
-		result = append(result, AirConditioner{
-			Number:       number,
-			Power:        valueText == "1",
-			ToggleTarget: target,
-		})
+		switch {
+		case strings.Contains(name, "(ВКЛ/ВЫКЛ)"):
+			valueText := normalizeText(table.Find(".itemValue span.itemValue").First().Text())
+			ac.Power = valueText == "1"
+
+			table.Find("a").Each(func(_ int, a *goquery.Selection) {
+				id, _ := a.Attr("id")
+				if !strings.HasPrefix(id, "dataList_toggle_") {
+					return
+				}
+
+				href, _ := a.Attr("href")
+
+				target, ok := postBackTargetFromHref(href)
+				if !ok {
+					target, ok = postBackTargetFromID(id)
+				}
+				if !ok {
+					return
+				}
+
+				ac.ToggleTarget = target
+			})
+
+		case strings.Contains(name, "(уставка)"):
+			valueText := normalizeText(table.Find(".itemValue span.itemValue").First().Text())
+			unit := normalizeText(table.Find(".itemUnit span").First().Text())
+
+			ac.HasSetpoint = true
+			ac.Setpoint.Value = valueText
+			ac.Setpoint.Unit = unit
+
+			table.Find("a").Each(func(_ int, a *goquery.Selection) {
+				id, _ := a.Attr("id")
+				if id == "" {
+					return
+				}
+
+				className, _ := a.Attr("class")
+				if strings.Contains(className, "aspNetDisabled") {
+					return
+				}
+
+				href, _ := a.Attr("href")
+
+				target, ok := postBackTargetFromHref(href)
+				if !ok {
+					target, ok = postBackTargetFromID(id)
+				}
+				if !ok {
+					return
+				}
+
+				switch {
+				case strings.HasPrefix(id, "dataList_previous_"):
+					ac.Setpoint.DecreaseTarget = target
+				case strings.HasPrefix(id, "dataList_next_"):
+					ac.Setpoint.IncreaseTarget = target
+				}
+			})
+		}
 	})
+
+	numbers := make([]int, 0, len(byNumber))
+	for number := range byNumber {
+		numbers = append(numbers, number)
+	}
+	sort.Ints(numbers)
+
+	result := make([]AirConditioner, 0, len(numbers))
+	for _, number := range numbers {
+		result = append(result, *byNumber[number])
+	}
 
 	return result, nil
 }
@@ -69,26 +121,31 @@ func postBackTargetFromHref(href string) (string, bool) {
 	}
 
 	target := href[start : start+end]
-	if target == "" {
-		return "", false
-	}
-
-	return target, true
+	return target, target != ""
 }
 
-func postBackTargetFromToggleID(id string) (string, bool) {
-	const prefix = "dataList_toggle_"
+func postBackTargetFromID(id string) (string, bool) {
+	const prefix = "dataList_"
 
 	if !strings.HasPrefix(id, prefix) {
 		return "", false
 	}
 
-	rawIndex := strings.TrimPrefix(id, prefix)
-	if rawIndex == "" {
+	raw := strings.TrimPrefix(id, prefix)
+
+	idx := strings.LastIndex(raw, "_")
+	if idx < 0 {
 		return "", false
 	}
 
-	return "dataList:_ctl" + rawIndex + ":toggle", true
+	action := raw[:idx]
+	index := raw[idx+1:]
+
+	if action == "" || index == "" {
+		return "", false
+	}
+
+	return "dataList:_ctl" + index + ":" + action, true
 }
 
 func parseACNumber(name string) (int, bool) {
