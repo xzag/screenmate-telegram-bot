@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
@@ -23,8 +24,6 @@ func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 		b.sendText(msg.Chat.ID, "Команды: /status")
 	}
 }
-
-// internal/bot/handlers.go
 
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 	if cb.From == nil || !b.isAllowed(cb.From.ID) {
@@ -46,25 +45,28 @@ func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
 }
 
 func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
-	log.Printf("toggle callback data=%q from=%d", cb.Data, cb.From.ID)
-	b.answerCallback(cb.ID, "Переключаю...")
-
-	roomKey, acNumber, err := parseToggleCallback(cb.Data)
+	roomKey, acNumber, expectedPower, err := parseToggleCallback(cb.Data)
 	if err != nil {
 		log.Printf("parse toggle callback: %v", err)
+		b.answerCallback(cb.ID, "Некорректная кнопка")
 		return
 	}
 
-	log.Printf("toggle parsed roomKey=%q acNumber=%d", roomKey, acNumber)
+	b.answerCallback(cb.ID, "Проверяю состояние...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
-	if err := b.service.TogglePower(ctx, roomKey, acNumber); err != nil {
+	result, err := b.service.TogglePowerIfState(ctx, roomKey, acNumber, expectedPower)
+	if err != nil {
 		log.Printf("toggle power: %v", err)
 
 		if cb.Message != nil {
-			msg := tgbotapi.NewMessage(cb.Message.Chat.ID, "⚠️ Не удалось переключить кондиционер: "+err.Error())
+			msg := tgbotapi.NewMessage(
+				cb.Message.Chat.ID,
+				"⚠️ Не удалось переключить кондиционер: "+err.Error(),
+			)
+
 			if _, sendErr := b.api.Send(msg); sendErr != nil {
 				log.Printf("send toggle error: %v", sendErr)
 			}
@@ -73,25 +75,46 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 		return
 	}
 
+	if result.StateChanged {
+		log.Printf(
+			"skip toggle: room=%s ac=%d expected=%v current=%v",
+			roomKey,
+			acNumber,
+			expectedPower,
+			result.CurrentPower,
+		)
+	}
+
+	time.Sleep(1 * time.Second)
+
 	b.editStatus(cb)
 }
 
-func parseToggleCallback(data string) (string, int, error) {
+func parseToggleCallback(data string) (roomKey string, acNumber int, expectedPower bool, err error) {
 	parts := strings.Split(data, ":")
-	if len(parts) != 3 {
-		return "", 0, fmt.Errorf("invalid callback data: %q", data)
+	if len(parts) != 4 {
+		return "", 0, false, fmt.Errorf("invalid callback data: %q", data)
 	}
 
 	if parts[0] != callbackTogglePrefix {
-		return "", 0, fmt.Errorf("invalid callback prefix: %q", parts[0])
+		return "", 0, false, fmt.Errorf("invalid callback prefix: %q", parts[0])
 	}
 
-	acNumber, err := strconv.Atoi(parts[2])
+	acNumber, err = strconv.Atoi(parts[2])
 	if err != nil {
-		return "", 0, fmt.Errorf("invalid ac number: %w", err)
+		return "", 0, false, fmt.Errorf("invalid ac number: %w", err)
 	}
 
-	return parts[1], acNumber, nil
+	switch parts[3] {
+	case "1":
+		expectedPower = true
+	case "0":
+		expectedPower = false
+	default:
+		return "", 0, false, fmt.Errorf("invalid expected power: %q", parts[3])
+	}
+
+	return parts[1], acNumber, expectedPower, nil
 }
 
 func (b *Bot) sendStatus(chatID int64) {

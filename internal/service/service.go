@@ -203,3 +203,51 @@ func (s *roomSession) togglePower(ctx context.Context, acNumber int) error {
 
 	return nil
 }
+
+func (s *roomSession) togglePowerIfState(
+	ctx context.Context,
+	acNumber int,
+	expectedPower bool,
+) (ToggleResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.maybeResetIdle()
+
+	client, err := s.getClient()
+	if err != nil {
+		return ToggleResult{}, err
+	}
+
+	result, err := client.TogglePowerIfState(ctx, acNumber, expectedPower)
+	if err != nil {
+		client.Reset()
+		return ToggleResult{}, err
+	}
+
+	s.lastUsed = time.Now()
+
+	return ToggleResult{
+		Toggled:      result.Toggled,
+		StateChanged: result.StateChanged,
+		CurrentPower: result.CurrentPower,
+	}, nil
+}
+
+func (s *Service) TogglePowerIfState(
+	ctx context.Context,
+	roomKey string,
+	acNumber int,
+	expectedPower bool,
+) (ToggleResult, error) {
+	session, ok := s.sessions[roomKey]
+	if !ok {
+		return ToggleResult{}, fmt.Errorf("room %q not found", roomKey)
+	}
+
+	if _, ok := session.room.Conditioners[acNumber]; !ok {
+		return ToggleResult{}, fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
+	}
+
+	return session.togglePowerIfState(ctx, acNumber, expectedPower)
+}

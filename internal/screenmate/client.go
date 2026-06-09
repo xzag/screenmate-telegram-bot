@@ -45,8 +45,38 @@ func (c *Client) Reset() {
 	c.currentPage = nil
 }
 
+func (c *Client) refreshRoomPage(ctx context.Context) error {
+	if c.currentPage == nil {
+		return fmt.Errorf("current page is empty")
+	}
+
+	form := cloneValues(c.currentPage.Values)
+
+	form.Set("__EVENTTARGET", "Refresh:Refresh")
+	form.Set("__EVENTARGUMENT", "")
+	form.Set("__LASTFOCUS", "")
+
+	nextPage, err := c.postPageForm(ctx, c.currentPage.Action, form, c.currentPage.URL)
+	if err != nil {
+		return err
+	}
+
+	c.currentPage = nextPage
+
+	switch kind := detectPageKind(nextPage); kind {
+	case pageKindRoomControl:
+		return nil
+
+	case pageKindLogin, pageKindRoomLookup:
+		return fmt.Errorf("session expired: page=%s", kind)
+
+	default:
+		return fmt.Errorf("unexpected page after refresh: page=%s", kind)
+	}
+}
+
 func (c *Client) ensureRoomPage(ctx context.Context) error {
-	if c.currentPage != nil && isRoomControlPage(c.currentPage) {
+	if detectPageKind(c.currentPage) == pageKindRoomControl {
 		return nil
 	}
 
@@ -58,8 +88,8 @@ func (c *Client) ensureRoomPage(ctx context.Context) error {
 		return fmt.Errorf("select room: %w", err)
 	}
 
-	if !isRoomControlPage(c.currentPage) {
-		return fmt.Errorf("room control page not reached")
+	if kind := detectPageKind(c.currentPage); kind != pageKindRoomControl {
+		return fmt.Errorf("room control page not reached: page=%s", kind)
 	}
 
 	return nil
@@ -70,7 +100,7 @@ func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
 		return RoomStatus{}, err
 	}
 
-	if err := c.refreshRoomPage(ctx); err != nil {
+	if err := c.postBack(ctx, "Refresh:Refresh"); err != nil {
 		c.Reset()
 
 		if err := c.ensureRoomPage(ctx); err != nil {
@@ -115,12 +145,7 @@ func (c *Client) TogglePower(ctx context.Context, acNumber int) error {
 
 	if err := c.postBack(ctx, target); err != nil {
 		c.Reset()
-
-		if err := c.ensureRoomPage(ctx); err != nil {
-			return fmt.Errorf("relogin after toggle failed: %w", err)
-		}
-
-		return fmt.Errorf("toggle failed, session was reset: %w", err)
+		return fmt.Errorf("toggle failed: %w", err)
 	}
 
 	return nil
@@ -207,44 +232,16 @@ func (c *Client) postBack(ctx context.Context, eventTarget string) error {
 
 	c.currentPage = nextPage
 
-	if isLoginPageBody(nextPage.Body) || isRoomLookupPageBody(nextPage.Body) {
-		return fmt.Errorf("session expired")
+	switch kind := detectPageKind(nextPage); kind {
+	case pageKindRoomControl:
+		return nil
+
+	case pageKindLogin, pageKindRoomLookup:
+		return fmt.Errorf("session expired: page=%s", kind)
+
+	default:
+		return fmt.Errorf("unexpected page after postback: page=%s", kind)
 	}
-
-	if !isRoomControlPage(nextPage) {
-		return fmt.Errorf("unexpected page after postback")
-	}
-
-	return nil
-}
-
-func (c *Client) refreshRoomPage(ctx context.Context) error {
-	if c.currentPage == nil {
-		return fmt.Errorf("current page is empty")
-	}
-
-	form := cloneValues(c.currentPage.Values)
-
-	form.Set("__EVENTTARGET", "Refresh:Refresh")
-	form.Set("__EVENTARGUMENT", "")
-	form.Set("__LASTFOCUS", "")
-
-	nextPage, err := c.postPageForm(ctx, c.currentPage.Action, form, c.currentPage.URL)
-	if err != nil {
-		return err
-	}
-
-	c.currentPage = nextPage
-
-	if isLoginPageBody(nextPage.Body) || isRoomLookupPageBody(nextPage.Body) {
-		return fmt.Errorf("session expired")
-	}
-
-	if !isRoomControlPage(nextPage) {
-		return fmt.Errorf("unexpected page after refresh")
-	}
-
-	return nil
 }
 
 func isLoginPage(body string) bool {
@@ -253,22 +250,108 @@ func isLoginPage(body string) bool {
 		strings.Contains(body, `name="password"`)
 }
 
+type pageKind string
+
+const (
+	pageKindRoomControl pageKind = "room_control"
+	pageKindLogin       pageKind = "login"
+	pageKindRoomLookup  pageKind = "room_lookup"
+	pageKindUnknown     pageKind = "unknown"
+)
+
+func detectPageKind(page *PageForm) pageKind {
+	if page == nil {
+		return pageKindUnknown
+	}
+
+	// ВАЖНО: сначала управление комнатой.
+	if isRoomControlPage(page) {
+		return pageKindRoomControl
+	}
+
+	body := page.Body
+
+	if strings.Contains(body, `id="LoginForm"`) ||
+		strings.Contains(body, `name="userName"`) ||
+		strings.Contains(body, `name="password"`) {
+		return pageKindLogin
+	}
+
+	if strings.Contains(body, `name="roomId"`) &&
+		strings.Contains(body, `lookUpRoomId`) {
+		return pageKindRoomLookup
+	}
+
+	return pageKindUnknown
+}
+
 func isRoomControlPage(page *PageForm) bool {
 	if page == nil {
 		return false
 	}
 
-	return strings.Contains(page.Body, `id="dataList"`) &&
+	return strings.Contains(page.Body, `id="dataList"`) ||
 		strings.Contains(page.Body, `dataList_toggle_`)
 }
 
-func isLoginPageBody(body string) bool {
-	return strings.Contains(body, `id="LoginForm"`) ||
-		strings.Contains(body, `name="userName"`) ||
-		strings.Contains(body, `name="password"`)
-}
+func (c *Client) TogglePowerIfState(
+	ctx context.Context,
+	acNumber int,
+	expectedPower bool,
+) (ToggleResult, error) {
+	if err := c.ensureRoomPage(ctx); err != nil {
+		return ToggleResult{}, err
+	}
 
-func isRoomLookupPageBody(body string) bool {
-	return strings.Contains(body, `name="roomId"`) &&
-		strings.Contains(body, `lookUpRoomId`)
+	// Берем свежее состояние перед нажатием.
+	if err := c.refreshRoomPage(ctx); err != nil {
+		c.Reset()
+
+		if err := c.ensureRoomPage(ctx); err != nil {
+			return ToggleResult{}, fmt.Errorf("relogin after refresh failed: %w", err)
+		}
+	}
+
+	acs, err := ParseAirConditioners(c.currentPage.Doc)
+	if err != nil {
+		return ToggleResult{}, fmt.Errorf("parse conditioners: %w", err)
+	}
+
+	var ac AirConditioner
+	found := false
+
+	for _, item := range acs {
+		if item.Number == acNumber {
+			ac = item
+			found = true
+			break
+		}
+	}
+
+	if !found {
+		return ToggleResult{}, fmt.Errorf("air conditioner %d not found", acNumber)
+	}
+
+	if ac.Power != expectedPower {
+		return ToggleResult{
+			Toggled:      false,
+			StateChanged: true,
+			CurrentPower: ac.Power,
+		}, nil
+	}
+
+	if ac.ToggleTarget == "" {
+		return ToggleResult{}, fmt.Errorf("air conditioner %d has empty toggle target", acNumber)
+	}
+
+	if err := c.postBack(ctx, ac.ToggleTarget); err != nil {
+		c.Reset()
+		return ToggleResult{}, fmt.Errorf("toggle failed: %w", err)
+	}
+
+	return ToggleResult{
+		Toggled:      true,
+		StateChanged: false,
+		CurrentPower: !expectedPower,
+	}, nil
 }

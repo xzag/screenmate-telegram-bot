@@ -15,3 +15,9 @@ type ConditionerView struct {
 	Power   bool
 	Found   bool
 }
+
+type ToggleResult struct {
+	Toggled      bool
+	StateChanged bool
+	CurrentPower bool
+}

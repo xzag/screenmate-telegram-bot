@@ -13,3 +13,9 @@ type RoomStatus struct {
 	AirConditioners []AirConditioner
 	UpdatedAt       time.Time
 }
+
+type ToggleResult struct {
+	Toggled      bool
+	StateChanged bool
+	CurrentPower bool
+}

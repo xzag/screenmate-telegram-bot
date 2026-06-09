@@ -1,5 +1,3 @@
-// internal/bot/keyboard.go
-
 package bot
 
 import (
@@ -12,7 +10,7 @@ import (
 
 const (
 	callbackRefreshAll   = "refresh_all"
-	callbackTogglePrefix = "toggle"
+	callbackTogglePrefix = "t"
 )
 
 func statusKeyboard(rooms []service.RoomView) tgbotapi.InlineKeyboardMarkup {
@@ -28,17 +26,30 @@ func statusKeyboard(rooms []service.RoomView) tgbotapi.InlineKeyboardMarkup {
 				continue
 			}
 
+			currentState := 0
 			icon := "🔴"
+			action := "включить"
+
 			if ac.Power {
+				currentState = 1
 				icon = "🟢"
+				action = "выключить"
 			}
 
-			label := fmt.Sprintf("%s %s: %d", icon, room.Name, ac.Number)
+			name := fmt.Sprintf("Кондиционер %d", ac.Number)
 			if ac.Comment != "" {
-				label = fmt.Sprintf("%s %s: %s", icon, room.Name, ac.Comment)
+				name = ac.Comment
 			}
 
-			callbackData := fmt.Sprintf("%s:%s:%d", callbackTogglePrefix, room.Key, ac.Number)
+			label := fmt.Sprintf("%s %s · %s", icon, name, action)
+
+			callbackData := fmt.Sprintf(
+				"%s:%s:%d:%d",
+				callbackTogglePrefix,
+				room.Key,
+				ac.Number,
+				currentState,
+			)
 
 			rows = append(rows, tgbotapi.NewInlineKeyboardRow(
 				tgbotapi.NewInlineKeyboardButtonData(label, callbackData),
