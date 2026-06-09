@@ -2,12 +2,14 @@ package bot
 
 import (
 	"context"
+	"fmt"
 	"log"
-	"screenmate-bot/internal/screenmate"
 	"strings"
-	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+
+	"screenmate-bot/internal/screenmate"
+	"screenmate-bot/internal/service"
 )
 
 func (b *Bot) handleMessage(msg *tgbotapi.Message) {
@@ -160,24 +162,7 @@ func (b *Bot) editRoom(cb *tgbotapi.CallbackQuery, roomKey string) {
 	if err != nil {
 		log.Printf("room status roomKey=%q: %v", roomKey, err)
 
-		text := "⚠️ <b>Не удалось открыть комнату</b>\n\n<code>" + escapeHTML(err.Error()) + "</code>"
-
-		edit := tgbotapi.NewEditMessageTextAndMarkup(
-			cb.Message.Chat.ID,
-			cb.Message.MessageID,
-			text,
-			tgbotapi.NewInlineKeyboardMarkup(
-				tgbotapi.NewInlineKeyboardRow(
-					tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
-				),
-			),
-		)
-		edit.ParseMode = tgbotapi.ModeHTML
-
-		if _, sendErr := b.api.Send(edit); sendErr != nil {
-			log.Printf("edit room error: %v", sendErr)
-		}
-
+		b.editRoomError(cb, roomKey, "Не удалось открыть комнату", err)
 		return
 	}
 
@@ -209,31 +194,10 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
-	result, err := b.service.TogglePowerIfState(ctx, roomKey, acNumber, expectedPower)
+	result, room, err := b.service.TogglePowerIfState(ctx, roomKey, acNumber, expectedPower)
 	if err != nil {
 		log.Printf("toggle power: %v", err)
-
-		if cb.Message != nil {
-			edit := tgbotapi.NewEditMessageTextAndMarkup(
-				cb.Message.Chat.ID,
-				cb.Message.MessageID,
-				"⚠️ <b>Не удалось переключить кондиционер</b>\n\n<code>"+escapeHTML(err.Error())+"</code>",
-				tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить комнату", refreshRoomCallback(roomKey)),
-					),
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
-					),
-				),
-			)
-			edit.ParseMode = tgbotapi.ModeHTML
-
-			if _, sendErr := b.api.Send(edit); sendErr != nil {
-				log.Printf("edit toggle error: %v", sendErr)
-			}
-		}
-
+		b.editRoomError(cb, roomKey, "Не удалось переключить кондиционер", err)
 		return
 	}
 
@@ -247,9 +211,69 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 		)
 	}
 
-	time.Sleep(1 * time.Second)
+	b.editRoomView(cb, room)
+}
 
-	b.editRoom(cb, roomKey)
+func (b *Bot) editRoomError(
+	cb *tgbotapi.CallbackQuery,
+	roomKey string,
+	title string,
+	err error,
+) {
+	if cb.Message == nil {
+		return
+	}
+
+	text := fmt.Sprintf(
+		"⚠️ <b>%s</b>\n\n<code>%s</code>",
+		escapeHTML(title),
+		escapeHTML(err.Error()),
+	)
+
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"🔄 Обновить комнату",
+				refreshRoomCallback(roomKey),
+			),
+		),
+		tgbotapi.NewInlineKeyboardRow(
+			tgbotapi.NewInlineKeyboardButtonData(
+				"⬅️ К комнатам",
+				callbackRoomsList,
+			),
+		),
+	)
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(
+		cb.Message.Chat.ID,
+		cb.Message.MessageID,
+		text,
+		keyboard,
+	)
+	edit.ParseMode = tgbotapi.ModeHTML
+
+	if _, sendErr := b.api.Send(edit); sendErr != nil {
+		log.Printf("edit room error: %v", sendErr)
+	}
+}
+
+func (b *Bot) editRoomView(cb *tgbotapi.CallbackQuery, room service.RoomView) {
+	if cb.Message == nil {
+		return
+	}
+
+	edit := tgbotapi.NewEditMessageTextAndMarkup(
+		cb.Message.Chat.ID,
+		cb.Message.MessageID,
+		b.formatRoom(room),
+		roomKeyboard(room),
+	)
+	edit.ParseMode = tgbotapi.ModeHTML
+
+	if _, err := b.api.Send(edit); err != nil {
+		log.Printf("edit room view: %v", err)
+	}
 }
 
 func (b *Bot) editLoading(cb *tgbotapi.CallbackQuery, action string) {
@@ -295,29 +319,11 @@ func (b *Bot) handleTemperatureCallback(cb *tgbotapi.CallbackQuery) {
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
-	result, err := b.service.AdjustTemperatureIfState(ctx, roomKey, acNumber, direction, expectedSetpoint)
+	result, room, err := b.service.AdjustTemperatureIfState(ctx, roomKey, acNumber, direction, expectedSetpoint)
 	if err != nil {
 		log.Printf("adjust temperature: %v", err)
-		if cb.Message != nil {
-			edit := tgbotapi.NewEditMessageTextAndMarkup(
-				cb.Message.Chat.ID,
-				cb.Message.MessageID,
-				"⚠️ <b>Не удалось изменить температуру</b>\n\n<code>"+escapeHTML(err.Error())+"</code>",
-				tgbotapi.NewInlineKeyboardMarkup(
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("🔄 Обновить комнату", refreshRoomCallback(roomKey)),
-					),
-					tgbotapi.NewInlineKeyboardRow(
-						tgbotapi.NewInlineKeyboardButtonData("⬅️ К комнатам", callbackRoomsList),
-					),
-				),
-			)
-			edit.ParseMode = tgbotapi.ModeHTML
-
-			if _, sendErr := b.api.Send(edit); sendErr != nil {
-				log.Printf("adjust temperature error: %v", sendErr)
-			}
-		}
+		b.editRoomError(cb, roomKey, "Не удалось изменить температуру", err)
+		return
 	}
 
 	if result.StateChanged {
@@ -330,7 +336,5 @@ func (b *Bot) handleTemperatureCallback(cb *tgbotapi.CallbackQuery) {
 		)
 	}
 
-	time.Sleep(1 * time.Second)
-
-	b.editRoom(cb, roomKey)
+	b.editRoomView(cb, room)
 }

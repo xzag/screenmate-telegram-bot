@@ -67,13 +67,13 @@ func (s *Service) Rooms() []RoomShort {
 	return result
 }
 
-func (s *Service) RoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
+func (s *Service) refreshRoomStatusByKey(ctx context.Context, roomKey string, refresh bool) (RoomView, error) {
 	for _, room := range s.rooms {
 		if room.Key != roomKey {
 			continue
 		}
 
-		view := s.roomStatus(ctx, room)
+		view := s.roomStatus(ctx, room, refresh)
 		if view.Err != nil {
 			return view, view.Err
 		}
@@ -82,6 +82,14 @@ func (s *Service) RoomStatus(ctx context.Context, roomKey string) (RoomView, err
 	}
 
 	return RoomView{}, fmt.Errorf("room %q not found", roomKey)
+}
+
+func (s *Service) RoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
+	return s.refreshRoomStatusByKey(ctx, roomKey, false)
+}
+
+func (s *Service) RefreshRoomStatus(ctx context.Context, roomKey string) (RoomView, error) {
+	return s.refreshRoomStatusByKey(ctx, roomKey, true)
 }
 
 func (s *Service) AllRoomsStatus(ctx context.Context) []RoomView {
@@ -94,7 +102,7 @@ func (s *Service) AllRoomsStatus(ctx context.Context) []RoomView {
 		i, room := i, room
 
 		g.Go(func() error {
-			views[i] = s.roomStatus(ctx, room)
+			views[i] = s.roomStatus(ctx, room, true)
 			return nil
 		})
 	}
@@ -104,7 +112,7 @@ func (s *Service) AllRoomsStatus(ctx context.Context) []RoomView {
 	return views
 }
 
-func (s *Service) roomStatus(ctx context.Context, room config.RoomConfig) RoomView {
+func (s *Service) roomStatus(ctx context.Context, room config.RoomConfig, refresh bool) RoomView {
 	view := RoomView{
 		Key:    room.Key,
 		Name:   room.Name,
@@ -117,53 +125,13 @@ func (s *Service) roomStatus(ctx context.Context, room config.RoomConfig) RoomVi
 		return view
 	}
 
-	status, err := session.status(ctx)
+	status, err := session.status(ctx, refresh)
 	if err != nil {
 		view.Err = err
 		return view
 	}
 
-	byNumber := make(map[int]screenmate.AirConditioner, len(status.AirConditioners))
-	for _, ac := range status.AirConditioners {
-		byNumber[ac.Number] = ac
-	}
-
-	numbers := make([]int, 0, len(room.Conditioners))
-	for number := range room.Conditioners {
-		numbers = append(numbers, number)
-	}
-	sort.Ints(numbers)
-
-	for _, number := range numbers {
-		ac, found := byNumber[number]
-
-		view.Conditioners = append(view.Conditioners, ConditionerView{
-			RoomKey: room.Key,
-			Number:  number,
-			Comment: room.Conditioners[number],
-			Power:   ac.Power,
-			Found:   found,
-
-			HasSetpoint:  found && ac.HasSetpoint,
-			Setpoint:     ac.Setpoint.Value,
-			SetpointUnit: ac.Setpoint.Unit,
-		})
-	}
-
-	return view
-}
-
-func (s *Service) TogglePower(ctx context.Context, roomKey string, acNumber int) error {
-	session, ok := s.sessions[roomKey]
-	if !ok {
-		return fmt.Errorf("room %q not found", roomKey)
-	}
-
-	if _, ok := session.room.Conditioners[acNumber]; !ok {
-		return fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
-	}
-
-	return session.togglePower(ctx, acNumber)
+	return buildRoomView(room, status)
 }
 
 func (s *roomSession) getClient() (*screenmate.Client, error) {
@@ -195,7 +163,7 @@ func (s *roomSession) maybeResetIdle() {
 	}
 }
 
-func (s *roomSession) status(ctx context.Context) (screenmate.RoomStatus, error) {
+func (s *roomSession) status(ctx context.Context, refresh bool) (screenmate.RoomStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -206,10 +174,10 @@ func (s *roomSession) status(ctx context.Context) (screenmate.RoomStatus, error)
 		return screenmate.RoomStatus{}, err
 	}
 
-	status, err := client.Status(ctx)
+	status, err := client.Status(ctx, refresh)
 	if err != nil {
 		client.Reset()
-		s.client = nil // важно: следующий раз создадим полностью свежий client
+		s.client = nil
 		return screenmate.RoomStatus{}, err
 	}
 
@@ -218,32 +186,11 @@ func (s *roomSession) status(ctx context.Context) (screenmate.RoomStatus, error)
 	return status, nil
 }
 
-func (s *roomSession) togglePower(ctx context.Context, acNumber int) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	s.maybeResetIdle()
-
-	client, err := s.getClient()
-	if err != nil {
-		return err
-	}
-
-	if err := client.TogglePower(ctx, acNumber); err != nil {
-		client.Reset()
-		return err
-	}
-
-	s.lastUsed = time.Now()
-
-	return nil
-}
-
 func (s *roomSession) togglePowerIfState(
 	ctx context.Context,
 	acNumber int,
 	expectedPower bool,
-) (ToggleResult, error) {
+) (ToggleResult, screenmate.RoomStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -251,14 +198,14 @@ func (s *roomSession) togglePowerIfState(
 
 	client, err := s.getClient()
 	if err != nil {
-		return ToggleResult{}, err
+		return ToggleResult{}, screenmate.RoomStatus{}, err
 	}
 
-	result, err := client.TogglePowerIfState(ctx, acNumber, expectedPower)
+	result, room, err := client.TogglePowerIfState(ctx, acNumber, expectedPower)
 	if err != nil {
 		client.Reset()
 		s.client = nil
-		return ToggleResult{}, err
+		return ToggleResult{}, screenmate.RoomStatus{}, err
 	}
 
 	s.lastUsed = time.Now()
@@ -267,7 +214,7 @@ func (s *roomSession) togglePowerIfState(
 		Toggled:      result.Toggled,
 		StateChanged: result.StateChanged,
 		CurrentPower: result.CurrentPower,
-	}, nil
+	}, room, nil
 }
 
 func (s *Service) TogglePowerIfState(
@@ -275,17 +222,28 @@ func (s *Service) TogglePowerIfState(
 	roomKey string,
 	acNumber int,
 	expectedPower bool,
-) (ToggleResult, error) {
+) (ToggleResult, RoomView, error) {
 	session, ok := s.sessions[roomKey]
 	if !ok {
-		return ToggleResult{}, fmt.Errorf("room %q not found", roomKey)
+		return ToggleResult{}, RoomView{}, fmt.Errorf("room %q not found", roomKey)
 	}
 
 	if _, ok := session.room.Conditioners[acNumber]; !ok {
-		return ToggleResult{}, fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
+		return ToggleResult{}, RoomView{}, fmt.Errorf(
+			"air conditioner %d is not configured for room %q",
+			acNumber,
+			roomKey,
+		)
 	}
 
-	return session.togglePowerIfState(ctx, acNumber, expectedPower)
+	result, status, err := session.togglePowerIfState(ctx, acNumber, expectedPower)
+	if err != nil {
+		return ToggleResult{}, RoomView{}, err
+	}
+
+	view := buildRoomView(session.room, status)
+
+	return result, view, nil
 }
 
 func (s *Service) AdjustTemperatureIfState(
@@ -294,17 +252,24 @@ func (s *Service) AdjustTemperatureIfState(
 	acNumber int,
 	direction screenmate.TemperatureDirection,
 	expectedSetpoint string,
-) (TemperatureResult, error) {
+) (TemperatureResult, RoomView, error) {
 	session, ok := s.sessions[roomKey]
 	if !ok {
-		return TemperatureResult{}, fmt.Errorf("room %q not found", roomKey)
+		return TemperatureResult{}, RoomView{}, fmt.Errorf("room %q not found", roomKey)
 	}
 
 	if _, ok := session.room.Conditioners[acNumber]; !ok {
-		return TemperatureResult{}, fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
+		return TemperatureResult{}, RoomView{}, fmt.Errorf("air conditioner %d is not configured for room %q", acNumber, roomKey)
 	}
 
-	return session.adjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
+	result, status, err := session.adjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
+	if err != nil {
+		return TemperatureResult{}, RoomView{}, err
+	}
+
+	view := buildRoomView(session.room, status)
+
+	return result, view, nil
 }
 
 func (s *roomSession) adjustTemperatureIfState(
@@ -312,7 +277,7 @@ func (s *roomSession) adjustTemperatureIfState(
 	acNumber int,
 	direction screenmate.TemperatureDirection,
 	expectedSetpoint string,
-) (TemperatureResult, error) {
+) (TemperatureResult, screenmate.RoomStatus, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -320,14 +285,14 @@ func (s *roomSession) adjustTemperatureIfState(
 
 	client, err := s.getClient()
 	if err != nil {
-		return TemperatureResult{}, err
+		return TemperatureResult{}, screenmate.RoomStatus{}, err
 	}
 
-	result, err := client.AdjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
+	result, room, err := client.AdjustTemperatureIfState(ctx, acNumber, direction, expectedSetpoint)
 	if err != nil {
 		client.Reset()
 		s.client = nil
-		return TemperatureResult{}, err
+		return TemperatureResult{}, screenmate.RoomStatus{}, err
 	}
 
 	s.lastUsed = time.Now()
@@ -336,5 +301,42 @@ func (s *roomSession) adjustTemperatureIfState(
 		Changed:         result.Changed,
 		StateChanged:    result.StateChanged,
 		CurrentSetpoint: result.CurrentSetpoint,
-	}, nil
+	}, room, nil
+}
+
+func buildRoomView(room config.RoomConfig, status screenmate.RoomStatus) RoomView {
+	view := RoomView{
+		Key:    room.Key,
+		Name:   room.Name,
+		RoomID: room.RoomID,
+	}
+
+	byNumber := make(map[int]screenmate.AirConditioner, len(status.AirConditioners))
+	for _, ac := range status.AirConditioners {
+		byNumber[ac.Number] = ac
+	}
+
+	numbers := make([]int, 0, len(room.Conditioners))
+	for number := range room.Conditioners {
+		numbers = append(numbers, number)
+	}
+	sort.Ints(numbers)
+
+	for _, number := range numbers {
+		ac, found := byNumber[number]
+
+		view.Conditioners = append(view.Conditioners, ConditionerView{
+			RoomKey: room.Key,
+			Number:  number,
+			Comment: room.Conditioners[number],
+			Power:   ac.Power,
+			Found:   found,
+
+			HasSetpoint:  found && ac.HasSetpoint,
+			Setpoint:     ac.Setpoint.Value,
+			SetpointUnit: ac.Setpoint.Unit,
+		})
+	}
+
+	return view
 }

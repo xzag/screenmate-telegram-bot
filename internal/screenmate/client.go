@@ -98,70 +98,34 @@ func (c *Client) ensureRoomPage(ctx context.Context) error {
 	return nil
 }
 
-func (c *Client) Status(ctx context.Context) (RoomStatus, error) {
+func (c *Client) Status(ctx context.Context, refresh bool) (RoomStatus, error) {
+	wasReady := detectPageKind(c.currentPage) == pageKindRoomControl
+
 	if err := c.ensureRoomPage(ctx); err != nil {
 		return RoomStatus{}, err
 	}
 
-	if err := c.refreshRoomPage(ctx); err != nil {
-		c.Reset()
+	// Если мы только что сделали login + selectRoom, страница уже свежая.
+	// Не надо сразу дергать refresh.
+	if refresh && wasReady {
+		if err := c.refreshRoomPage(ctx); err != nil {
+			c.Reset()
 
-		// Если сам ctx уже умер — не пытаемся логиниться тем же ctx.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
-		}
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
+			}
 
-		// Relogin имеет смысл только когда сервер сказал "сессия протухла".
-		if !errors.Is(err, ErrSessionExpired) {
-			return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
-		}
+			if !errors.Is(err, ErrSessionExpired) {
+				return RoomStatus{}, fmt.Errorf("refresh failed: %w", err)
+			}
 
-		if err := c.ensureRoomPage(ctx); err != nil {
-			return RoomStatus{}, fmt.Errorf("relogin after refresh failed: %w", err)
-		}
-	}
-
-	acs, err := ParseAirConditioners(c.currentPage.Doc)
-	if err != nil {
-		return RoomStatus{}, fmt.Errorf("parse air conditioners: %w", err)
-	}
-
-	return RoomStatus{
-		RoomID:          c.roomID,
-		AirConditioners: acs,
-		UpdatedAt:       time.Now(),
-	}, nil
-}
-
-func (c *Client) TogglePower(ctx context.Context, acNumber int) error {
-	if err := c.ensureRoomPage(ctx); err != nil {
-		return err
-	}
-
-	acs, err := ParseAirConditioners(c.currentPage.Doc)
-	if err != nil {
-		return fmt.Errorf("parse conditioners: %w", err)
-	}
-
-	var target string
-
-	for _, ac := range acs {
-		if ac.Number == acNumber {
-			target = ac.ToggleTarget
-			break
+			if err := c.ensureRoomPage(ctx); err != nil {
+				return RoomStatus{}, fmt.Errorf("relogin after refresh failed: %w", err)
+			}
 		}
 	}
 
-	if target == "" {
-		return fmt.Errorf("air conditioner %d not found", acNumber)
-	}
-
-	if err := c.postBack(ctx, target); err != nil {
-		c.Reset()
-		return fmt.Errorf("toggle failed: %w", err)
-	}
-
-	return nil
+	return c.currentStatus()
 }
 
 func (c *Client) login(ctx context.Context) error {
@@ -311,30 +275,16 @@ func (c *Client) TogglePowerIfState(
 	ctx context.Context,
 	acNumber int,
 	expectedPower bool,
-) (ToggleResult, error) {
+) (ToggleResult, RoomStatus, error) {
 	if err := c.ensureRoomPage(ctx); err != nil {
-		return ToggleResult{}, err
+		return ToggleResult{}, RoomStatus{}, err
 	}
 
-	if err := c.refreshRoomPage(ctx); err != nil {
-		c.Reset()
-
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ToggleResult{}, fmt.Errorf("refresh failed: %w", err)
-		}
-
-		if !errors.Is(err, ErrSessionExpired) {
-			return ToggleResult{}, fmt.Errorf("refresh failed: %w", err)
-		}
-
-		if err := c.ensureRoomPage(ctx); err != nil {
-			return ToggleResult{}, fmt.Errorf("relogin after refresh failed: %w", err)
-		}
-	}
-
+	// ВАЖНО: без refresh.
+	// Для защиты от двойных кликов внутри бота достаточно mutex + currentPage.
 	acs, err := ParseAirConditioners(c.currentPage.Doc)
 	if err != nil {
-		return ToggleResult{}, fmt.Errorf("parse conditioners: %w", err)
+		return ToggleResult{}, RoomStatus{}, fmt.Errorf("parse conditioners: %w", err)
 	}
 
 	var ac AirConditioner
@@ -349,31 +299,41 @@ func (c *Client) TogglePowerIfState(
 	}
 
 	if !found {
-		return ToggleResult{}, fmt.Errorf("air conditioner %d not found", acNumber)
+		return ToggleResult{}, RoomStatus{}, fmt.Errorf("air conditioner %d not found", acNumber)
 	}
 
 	if ac.Power != expectedPower {
+		status, err := c.currentStatus()
+		if err != nil {
+			return ToggleResult{}, RoomStatus{}, err
+		}
+
 		return ToggleResult{
 			Toggled:      false,
 			StateChanged: true,
 			CurrentPower: ac.Power,
-		}, nil
+		}, status, nil
 	}
 
 	if ac.ToggleTarget == "" {
-		return ToggleResult{}, fmt.Errorf("air conditioner %d has empty toggle target", acNumber)
+		return ToggleResult{}, RoomStatus{}, fmt.Errorf("air conditioner %d has empty toggle target", acNumber)
 	}
 
 	if err := c.postBack(ctx, ac.ToggleTarget); err != nil {
 		c.Reset()
-		return ToggleResult{}, fmt.Errorf("toggle failed: %w", err)
+		return ToggleResult{}, RoomStatus{}, fmt.Errorf("toggle failed: %w", err)
+	}
+
+	status, err := c.currentStatus()
+	if err != nil {
+		return ToggleResult{}, RoomStatus{}, err
 	}
 
 	return ToggleResult{
 		Toggled:      true,
 		StateChanged: false,
 		CurrentPower: !expectedPower,
-	}, nil
+	}, status, nil
 }
 
 type TemperatureDirection string
@@ -388,19 +348,17 @@ func (c *Client) AdjustTemperatureIfState(
 	acNumber int,
 	direction TemperatureDirection,
 	expectedSetpoint string,
-) (TemperatureResult, error) {
+) (TemperatureResult, RoomStatus, error) {
 	if err := c.ensureRoomPage(ctx); err != nil {
-		return TemperatureResult{}, err
+		return TemperatureResult{}, RoomStatus{}, err
 	}
 
-	if err := c.refreshRoomPage(ctx); err != nil {
-		c.Reset()
-		return TemperatureResult{}, fmt.Errorf("refresh failed: %w", err)
-	}
-
+	// ВАЖНО: без refreshRoomPage().
+	// Работаем с текущей страницей в session.
+	// Если операция пройдет — postBack вернет свежую страницу.
 	acs, err := ParseAirConditioners(c.currentPage.Doc)
 	if err != nil {
-		return TemperatureResult{}, fmt.Errorf("parse conditioners: %w", err)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf("parse conditioners: %w", err)
 	}
 
 	var ac AirConditioner
@@ -415,19 +373,24 @@ func (c *Client) AdjustTemperatureIfState(
 	}
 
 	if !found {
-		return TemperatureResult{}, fmt.Errorf("air conditioner %d not found", acNumber)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf("air conditioner %d not found", acNumber)
 	}
 
 	if !ac.HasSetpoint {
-		return TemperatureResult{}, fmt.Errorf("air conditioner %d has no setpoint control", acNumber)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf("air conditioner %d has no setpoint control", acNumber)
 	}
 
 	if ac.Setpoint.Value != expectedSetpoint {
+		status, err := c.currentStatus()
+		if err != nil {
+			return TemperatureResult{}, RoomStatus{}, err
+		}
+
 		return TemperatureResult{
 			Changed:         false,
 			StateChanged:    true,
 			CurrentSetpoint: ac.Setpoint.Value,
-		}, nil
+		}, status, nil
 	}
 
 	var target string
@@ -435,24 +398,52 @@ func (c *Client) AdjustTemperatureIfState(
 	switch direction {
 	case TemperatureUp:
 		target = ac.Setpoint.IncreaseTarget
+
 	case TemperatureDown:
 		target = ac.Setpoint.DecreaseTarget
+
 	default:
-		return TemperatureResult{}, fmt.Errorf("unknown temperature direction %q", direction)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf("unknown temperature direction %q", direction)
 	}
 
 	if target == "" {
-		return TemperatureResult{}, fmt.Errorf("air conditioner %d has no target for temperature %s", acNumber, direction)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf(
+			"air conditioner %d has no target for temperature %s",
+			acNumber,
+			direction,
+		)
 	}
 
 	if err := c.postBack(ctx, target); err != nil {
 		c.Reset()
-		return TemperatureResult{}, fmt.Errorf("adjust temperature failed: %w", err)
+		return TemperatureResult{}, RoomStatus{}, fmt.Errorf("adjust temperature failed: %w", err)
+	}
+
+	status, err := c.currentStatus()
+	if err != nil {
+		return TemperatureResult{}, RoomStatus{}, err
 	}
 
 	return TemperatureResult{
 		Changed:         true,
 		StateChanged:    false,
-		CurrentSetpoint: ac.Setpoint.Value,
+		CurrentSetpoint: expectedSetpoint,
+	}, status, nil
+}
+
+func (c *Client) currentStatus() (RoomStatus, error) {
+	if detectPageKind(c.currentPage) != pageKindRoomControl {
+		return RoomStatus{}, fmt.Errorf("current page is not room control page")
+	}
+
+	acs, err := ParseAirConditioners(c.currentPage.Doc)
+	if err != nil {
+		return RoomStatus{}, fmt.Errorf("parse air conditioners: %w", err)
+	}
+
+	return RoomStatus{
+		RoomID:          c.roomID,
+		AirConditioners: acs,
+		UpdatedAt:       time.Now(),
 	}, nil
 }
