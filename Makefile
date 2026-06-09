@@ -31,7 +31,7 @@ deploy: build
 install:
 	sudo systemctl stop screenmate-bot
 	sudo cp $(APP_NAME) /opt/screenmate-bot/$(APP_NAME)
-	sudo chown parking:parking /opt/screenmate-bot/$(APP_NAME)
+	sudo chown screenmate:screenmate /opt/screenmate-bot/$(APP_NAME)
 	sudo chmod +x /opt/screenmate-bot/$(APP_NAME)
 	sudo systemctl start screenmate-bot
 
