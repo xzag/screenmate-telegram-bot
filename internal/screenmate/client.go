@@ -36,7 +36,7 @@ func NewClient(baseURL, username, password, roomID string) (*Client, error) {
 		roomID:   roomID,
 		http: &http.Client{
 			Jar:     jar,
-			Timeout: 30 * time.Second,
+			Timeout: 60 * time.Second,
 		},
 	}, nil
 }
