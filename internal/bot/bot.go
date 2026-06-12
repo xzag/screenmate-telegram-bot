@@ -103,14 +103,11 @@ func (b *Bot) isAdmin(userID int64) bool {
 }
 
 func (b *Bot) isAllowed(userID int64) bool {
-	return true
+	if b.isAdmin(userID) {
+		return true
+	}
 
-	// for now we skip that
-	//if b.isAdmin(userID) {
-	//	return true
-	//}
-	//
-	//return b.isMemberOfAnyAccessGroup(userID)
+	return b.isMemberOfAnyAccessGroup(userID)
 }
 
 func (b *Bot) isMemberOfAnyAccessGroup(userID int64) bool {
