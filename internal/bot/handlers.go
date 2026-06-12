@@ -53,8 +53,30 @@ func (b *Bot) handleMyChatMember(update *tgbotapi.ChatMemberUpdated) {
 	}
 }
 
+func isPrivateChat(chat *tgbotapi.Chat) bool {
+	return chat != nil && chat.Type == "private"
+}
+
 func (b *Bot) handleMessage(msg *tgbotapi.Message) {
-	if msg.From == nil || !b.isAllowed(msg.From.ID) {
+	if msg.From == nil {
+		return
+	}
+
+	// В группах/каналах молчим полностью.
+	// Никаких "Нет доступа", никаких /chatid, ничего.
+	if !isPrivateChat(msg.Chat) {
+		log.Printf(
+			"ignore non-private message: chat_id=%d chat_type=%s chat_title=%q from_user_id=%d command=%q",
+			msg.Chat.ID,
+			msg.Chat.Type,
+			msg.Chat.Title,
+			msg.From.ID,
+			msg.Command(),
+		)
+		return
+	}
+
+	if !b.isAllowed(msg.From.ID) {
 		b.sendText(msg.Chat.ID, "Нет доступа.")
 		return
 	}
@@ -86,7 +108,25 @@ func (b *Bot) sendAllRoomsStatus(chatID int64) {
 }
 
 func (b *Bot) handleCallback(cb *tgbotapi.CallbackQuery) {
-	if cb.From == nil || !b.isAllowed(cb.From.ID) {
+	if cb.From == nil {
+		return
+	}
+
+	if cb.Message != nil && !isPrivateChat(cb.Message.Chat) {
+		log.Printf(
+			"ignore non-private callback: chat_id=%d chat_type=%s from_user_id=%d data=%q",
+			cb.Message.Chat.ID,
+			cb.Message.Chat.Type,
+			cb.From.ID,
+			cb.Data,
+		)
+
+		// Это не сообщение в группу, а маленький popup у нажавшего.
+		b.answerCallback(cb.ID, "Бот работает только в личке")
+		return
+	}
+
+	if !b.isAllowed(cb.From.ID) {
 		b.answerCallback(cb.ID, "Нет доступа.")
 		return
 	}
