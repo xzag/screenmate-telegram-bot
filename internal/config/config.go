@@ -15,6 +15,9 @@ type Config struct {
 
 type TelegramConfig struct {
 	Token string `yaml:"token"`
+
+	Admins         []int64 `yaml:"admins"`
+	AccessGroupIDs []int64 `yaml:"access_group_ids"`
 }
 
 type ScreenMateConfig struct {

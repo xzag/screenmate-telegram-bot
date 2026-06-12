@@ -1,7 +1,10 @@
 telegram:
   token: "put-telegram-token-here"
-  allowed_users:
+  admins:
     - 123456789
+  access_group_ids:
+    - -1001111111111
+    - -1002222222222
 
 screenmate:
   base_url: "https://screenmate.example.local"

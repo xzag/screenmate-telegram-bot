@@ -12,6 +12,47 @@ import (
 	"screenmate-bot/internal/service"
 )
 
+func (b *Bot) handleMyChatMember(update *tgbotapi.ChatMemberUpdated) {
+	chat := update.Chat
+	from := update.From
+
+	log.Printf(
+		"bot chat member updated: chat_id=%d chat_type=%s chat_title=%q chat_username=%q from_user_id=%d from_username=%q from_name=%q old_status=%s new_status=%s",
+		chat.ID,
+		chat.Type,
+		chat.Title,
+		chat.UserName,
+		from.ID,
+		from.UserName,
+		strings.TrimSpace(from.FirstName+" "+from.LastName),
+		update.OldChatMember.Status,
+		update.NewChatMember.Status,
+	)
+
+	// Можно отдельно красиво подсветить именно добавление/выдачу доступа.
+	switch update.NewChatMember.Status {
+	case "member", "administrator":
+		log.Printf(
+			"bot added/enabled: chat_id=%d chat_type=%s chat_title=%q added_by_user_id=%d added_by_username=%q",
+			chat.ID,
+			chat.Type,
+			chat.Title,
+			from.ID,
+			from.UserName,
+		)
+
+	case "left", "kicked":
+		log.Printf(
+			"bot removed/disabled: chat_id=%d chat_type=%s chat_title=%q removed_by_user_id=%d removed_by_username=%q",
+			chat.ID,
+			chat.Type,
+			chat.Title,
+			from.ID,
+			from.UserName,
+		)
+	}
+}
+
 func (b *Bot) handleMessage(msg *tgbotapi.Message) {
 	if msg.From == nil || !b.isAllowed(msg.From.ID) {
 		b.sendText(msg.Chat.ID, "Нет доступа.")

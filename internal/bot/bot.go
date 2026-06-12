@@ -16,6 +16,13 @@ type Bot struct {
 	cfg     config.Config
 	service *service.Service
 	clock   *timeutil.Clock
+
+	membershipCache map[int64]membershipCacheItem
+}
+
+type membershipCacheItem struct {
+	allowed   bool
+	expiresAt time.Time
 }
 
 func New(cfg config.Config, svc *service.Service) (*Bot, error) {
@@ -30,10 +37,11 @@ func New(cfg config.Config, svc *service.Service) (*Bot, error) {
 	}
 
 	return &Bot{
-		api:     api,
-		cfg:     cfg,
-		service: svc,
-		clock:   clock,
+		api:             api,
+		cfg:             cfg,
+		service:         svc,
+		clock:           clock,
+		membershipCache: make(map[int64]membershipCacheItem),
 	}, nil
 }
 
@@ -42,6 +50,11 @@ func (b *Bot) Run() {
 
 	updateConfig := tgbotapi.NewUpdate(0)
 	updateConfig.Timeout = 30
+	updateConfig.AllowedUpdates = []string{
+		"message",
+		"callback_query",
+		"my_chat_member",
+	}
 
 	updates := b.api.GetUpdatesChan(updateConfig)
 
@@ -53,6 +66,11 @@ func (b *Bot) Run() {
 
 		if update.CallbackQuery != nil {
 			b.handleCallback(update.CallbackQuery)
+			continue
+		}
+
+		if update.MyChatMember != nil {
+			b.handleMyChatMember(update.MyChatMember)
 			continue
 		}
 	}
@@ -74,8 +92,90 @@ func (b *Bot) answerCallback(callbackID string, text string) {
 	}
 }
 
-func (b *Bot) isAllowed(_ int64) bool {
+func (b *Bot) isAdmin(userID int64) bool {
+	for _, adminID := range b.cfg.Telegram.Admins {
+		if adminID == userID {
+			return true
+		}
+	}
+
+	return false
+}
+
+func (b *Bot) isAllowed(userID int64) bool {
 	return true
+
+	// for now we skip that
+	//if b.isAdmin(userID) {
+	//	return true
+	//}
+	//
+	//return b.isMemberOfAnyAccessGroup(userID)
+}
+
+func (b *Bot) isMemberOfAnyAccessGroup(userID int64) bool {
+	if len(b.cfg.Telegram.AccessGroupIDs) == 0 {
+		return false
+	}
+
+	if cached, ok := b.membershipCache[userID]; ok && time.Now().Before(cached.expiresAt) {
+		return cached.allowed
+	}
+
+	allowed := false
+
+	for _, groupID := range b.cfg.Telegram.AccessGroupIDs {
+		if b.isMemberOfGroup(userID, groupID) {
+			allowed = true
+			break
+		}
+	}
+
+	b.membershipCache[userID] = membershipCacheItem{
+		allowed:   allowed,
+		expiresAt: time.Now().Add(5 * time.Minute),
+	}
+
+	return allowed
+}
+
+func (b *Bot) isMemberOfGroup(userID int64, groupID int64) bool {
+	member, err := b.api.GetChatMember(tgbotapi.GetChatMemberConfig{
+		ChatConfigWithUser: tgbotapi.ChatConfigWithUser{
+			ChatID: groupID,
+			UserID: userID,
+		},
+	})
+	if err != nil {
+		log.Printf(
+			"get chat member failed: user_id=%d group_id=%d err=%v",
+			userID,
+			groupID,
+			err,
+		)
+		return false
+	}
+
+	switch member.Status {
+	case "creator", "administrator", "member":
+		return true
+
+	case "restricted":
+		// Спорно. Я бы сначала не пускала.
+		return false
+
+	case "left", "kicked":
+		return false
+
+	default:
+		log.Printf(
+			"unknown chat member status: user_id=%d group_id=%d status=%q",
+			userID,
+			groupID,
+			member.Status,
+		)
+		return false
+	}
 }
 
 func contextTimeout() time.Duration {
