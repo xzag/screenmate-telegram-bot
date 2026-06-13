@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 
@@ -260,25 +261,37 @@ func (b *Bot) handleToggleCallback(cb *tgbotapi.CallbackQuery) {
 	b.answerCallback(cb.ID, "Переключаю...")
 	b.editLoading(cb, "Переключаю кондиционер")
 
+	started := time.Now()
+
+	audit := newAuditEvent(cb.From, auditActionTogglePower, roomKey, acNumber)
+	audit.Expected = boolString(expectedPower)
+
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
 	result, room, err := b.service.TogglePowerIfState(ctx, roomKey, acNumber, expectedPower)
 	if err != nil {
+		audit.Result = auditResultError
+		audit.Error = err.Error()
+		audit.Duration = time.Since(started)
+		logAudit(audit)
+
 		log.Printf("toggle power: %v", err)
 		b.editRoomError(cb, roomKey, "Не удалось переключить кондиционер", err)
 		return
 	}
 
+	audit.RoomName = room.Name
+	audit.Actual = boolString(result.CurrentPower)
+	audit.Duration = time.Since(started)
+
 	if result.StateChanged {
-		log.Printf(
-			"skip toggle: room=%s ac=%d expected=%v current=%v",
-			roomKey,
-			acNumber,
-			expectedPower,
-			result.CurrentPower,
-		)
+		audit.Result = auditResultSkipped
+	} else {
+		audit.Result = auditResultSuccess
 	}
+
+	logAudit(audit)
 
 	b.editRoomView(cb, room)
 }
@@ -375,35 +388,64 @@ func (b *Bot) handleTemperatureCallback(cb *tgbotapi.CallbackQuery) {
 	b.editLoading(cb, "Меняю температуру")
 
 	var direction screenmate.TemperatureDirection
+	action := auditActionTempUp
+
 	switch directionRaw {
 	case "u":
 		direction = screenmate.TemperatureUp
+		action = auditActionTempUp
+
 	case "d":
 		direction = screenmate.TemperatureDown
+		action = auditActionTempDown
+
 	default:
-		b.answerCallback(cb.ID, "Некорректное направление")
+		b.editRoomError(
+			cb,
+			roomKey,
+			"Не удалось изменить температуру",
+			fmt.Errorf("unknown temperature direction %q", directionRaw),
+		)
 		return
 	}
+
+	started := time.Now()
+
+	audit := newAuditEvent(cb.From, action, roomKey, acNumber)
+	audit.Expected = expectedSetpoint
 
 	ctx, cancel := context.WithTimeout(context.Background(), contextTimeout())
 	defer cancel()
 
-	result, room, err := b.service.AdjustTemperatureIfState(ctx, roomKey, acNumber, direction, expectedSetpoint)
+	result, room, err := b.service.AdjustTemperatureIfState(
+		ctx,
+		roomKey,
+		acNumber,
+		direction,
+		expectedSetpoint,
+	)
 	if err != nil {
+		audit.Result = auditResultError
+		audit.Error = err.Error()
+		audit.Duration = time.Since(started)
+		logAudit(audit)
+
 		log.Printf("adjust temperature: %v", err)
 		b.editRoomError(cb, roomKey, "Не удалось изменить температуру", err)
 		return
 	}
 
+	audit.RoomName = room.Name
+	audit.Actual = result.CurrentSetpoint
+	audit.Duration = time.Since(started)
+
 	if result.StateChanged {
-		log.Printf(
-			"skip temperature change: room=%s ac=%d expected=%s current=%s",
-			roomKey,
-			acNumber,
-			expectedSetpoint,
-			result.CurrentSetpoint,
-		)
+		audit.Result = auditResultSkipped
+	} else {
+		audit.Result = auditResultSuccess
 	}
+
+	logAudit(audit)
 
 	b.editRoomView(cb, room)
 }
