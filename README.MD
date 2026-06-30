@@ -108,7 +108,7 @@ rooms:
 Пример:
 
 ```text
-http://91.192.175.234/screenmate
+http://screenmate.local/screenmate
 ```
 
 #### `screenmate.max_parallel_rooms`
